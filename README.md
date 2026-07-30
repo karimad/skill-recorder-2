@@ -100,6 +100,18 @@ does Skill Recorder send the event timeline (window/document titles, URLs, and c
 previews), extracted screen images, and narration text to GitHub's cloud for Copilot to
 process.
 
+**Before anything is sent, a pre-send scan runs on your computer.** Skill Recorder
+inspects exactly the text that Analyze would upload — window/document titles, URLs,
+clipboard previews, terminal commands, markers, and transcribed narration — for likely
+secrets and personal details (private keys, API tokens, credentials, JWTs, emails,
+payment-card and Social Security numbers, and other high-entropy strings). If it finds
+anything, Analyze pauses and shows you a redacted review (values are masked; raw secrets
+are never stored or displayed) so you can cancel or choose **Analyze anyway** — nothing is
+uploaded until you decide. This check is a safety net, not a guarantee: it scans **text
+only**, so it can't see secrets that appear solely inside captured screenshots, and no
+detector catches everything. Keeping secrets out of the recording is still the best
+protection.
+
 The in-app "Records your screen and activity" panel spells out exactly what's collected:
 
 - **Window tracking:** active-app / window switches.

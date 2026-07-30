@@ -6,6 +6,7 @@ import type {
   AutomationBuildProgress,
   CopilotSignInResult,
   NarrationStatus,
+  SensitiveReport,
   SessionSummary,
   SkillBuildProgress,
   SkillPlacement,
@@ -32,6 +33,7 @@ import {
   SkillStepTiles,
 } from "./plan-edit";
 import { formatBytes, formatDur, formatWhen, shortLabel } from "./format";
+import { SensitiveReview } from "./SensitiveReview";
 
 export function Library() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -472,6 +474,9 @@ function AnalysisWorkspace({
   const [analyzing, setAnalyzing] = useState(false);
   const [statusLine, setStatusLine] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Set when the on-device pre-send scan holds analysis for review; cleared on the
+  // next run (either "Analyze anyway" or a fresh attempt).
+  const [review, setReview] = useState<SensitiveReport | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftIntent, setDraftIntent] = useState("");
@@ -548,23 +553,33 @@ function AnalysisWorkspace({
     });
   }, [sessionId]);
 
-  const run = useCallback(async () => {
-    canceled.current = false;
-    setEditing(false);
-    setDraftTitle("");
-    setDraftIntent("");
-    setAnalyzing(true);
-    setError(null);
-    setStatusLine("Starting…");
-    const res = await window.skillRecorder.analyze(sessionId);
-    if (res.ok && res.analysis) {
-      setAnalysis(res.analysis);
-      setSteps(res.analysis.steps);
-      stepsDirty.current = false;
-    } else if (!canceled.current) setError(res.error ?? "Analysis failed");
-    setAnalyzing(false);
-    void onChanged();
-  }, [sessionId, onChanged]);
+  const run = useCallback(
+    async (opts?: { acknowledge?: boolean }) => {
+      canceled.current = false;
+      setEditing(false);
+      setDraftTitle("");
+      setDraftIntent("");
+      setReview(null);
+      setError(null);
+      setAnalyzing(true);
+      setStatusLine("Starting…");
+      const res = await window.skillRecorder.analyze(
+        sessionId,
+        opts?.acknowledge ? { acknowledgeSensitive: true } : undefined,
+      );
+      if (res.ok && res.analysis) {
+        setAnalysis(res.analysis);
+        setSteps(res.analysis.steps);
+        stepsDirty.current = false;
+      } else if (res.review && !res.ok) {
+        // On-device scan held it back before anything was sent — show the review.
+        setReview(res.review);
+      } else if (!canceled.current) setError(res.error ?? "Analysis failed");
+      setAnalyzing(false);
+      void onChanged();
+    },
+    [sessionId, onChanged],
+  );
 
   const cancel = useCallback(async () => {
     canceled.current = true;
@@ -690,10 +705,10 @@ function AnalysisWorkspace({
           <p className="ws-note">Still processing this recording… try again in a moment.</p>
         )}
 
-        {summary.processed && !analysis && !analyzing && (
+        {summary.processed && !analysis && !analyzing && !review && (
           <div className="ws-empty">
             <p className="ws-empty-lead">See what you did in this recording, step by step.</p>
-            <button className="record-cta" onClick={run}>
+            <button className="record-cta" onClick={() => void run()}>
               Analyze recording
             </button>
             <details className="analyze-disclosure">
@@ -705,7 +720,10 @@ function AnalysisWorkspace({
                 <span className="cloud-analysis-caution">
                   Do not analyze a recording that may contain passwords, access tokens, API keys,
                   credentials, secrets, or other sensitive or confidential information.
-                </span>
+                </span>{" "}
+                Before anything is sent, Skill Recorder scans this text on your computer and
+                flags likely secrets or personal details for you to review — but this text-only
+                check can miss things, so it&apos;s a safety net, not a guarantee.
               </p>
             </details>
             {voicePending && (
@@ -716,6 +734,15 @@ function AnalysisWorkspace({
               </p>
             )}
           </div>
+        )}
+
+        {summary.processed && review && !analyzing && (
+          <SensitiveReview
+            report={review}
+            busy={analyzing}
+            onCancel={() => setReview(null)}
+            onProceed={() => void run({ acknowledge: true })}
+          />
         )}
 
         {analyzing && (

@@ -2,8 +2,17 @@ import type { Analysis, AnalysisFeedback, AnalysisStep, Confidence } from "./ana
 import type { AutomationPlan, BuiltAutomation } from "./automation";
 import type { MicrophoneDevice } from "./microphone";
 import type { NarrationLanguage } from "./narration";
+import type { SensitiveReport } from "./sensitive";
 import type { BuiltSkill, SkillArchitecture, SkillPlan } from "./skill";
 import type { RecorderState } from "./types";
+
+export type {
+  SensitiveCategory,
+  SensitiveFinding,
+  SensitiveReport,
+  SensitiveSeverity,
+  SensitiveSource,
+} from "./sensitive";
 
 /** The last completed session — the one that can be analyzed. */
 export interface LastSession {
@@ -100,6 +109,23 @@ export interface AnalyzeResult {
   ok: boolean;
   analysis?: Analysis;
   error?: string;
+  /**
+   * Present when an on-device pre-send scan found potentially sensitive details
+   * in the text that would be sent to GitHub Copilot. When set on a failed
+   * result (`ok:false`), the analysis was **held back** and nothing was sent —
+   * the renderer should let the user review and either cancel or re-invoke with
+   * `acknowledgeSensitive: true`.
+   */
+  review?: SensitiveReport;
+}
+
+/** Options for an analyze round. */
+export interface AnalyzeOptions {
+  /**
+   * Proceed even though the on-device pre-send scan flagged sensitive details.
+   * Set once the user has reviewed the findings and chosen "Analyze anyway".
+   */
+  acknowledgeSensitive?: boolean;
 }
 
 /** Feedback payload sent from the renderer for a re-analysis round. */
@@ -427,8 +453,11 @@ export interface SkillRecorderApi {
   downloadNarrationModel(): Promise<NarrationActionResult>;
   transcribeNarration(sessionId: string): Promise<NarrationActionResult>;
   onNarrationStatusChanged(cb: (status: NarrationStatus) => void): () => void;
-  /** Run the Copilot describer on a session (defaults to the last completed one). */
-  analyze(sessionId?: string): Promise<AnalyzeResult>;
+  /** Run the Copilot describer on a session (defaults to the last completed one).
+   *  Runs an on-device sensitive-detail scan first; if it flags anything and the
+   *  caller hasn't set `acknowledgeSensitive`, resolves with `{ ok:false, review }`
+   *  and sends nothing. */
+  analyze(sessionId?: string, options?: AnalyzeOptions): Promise<AnalyzeResult>;
   /** Send NL feedback and re-analyze in the same multi-turn session. */
   analyzeFeedback(input: AnalysisFeedbackInput): Promise<AnalyzeResult>;
   /** Load the persisted analysis for a session, if any. */

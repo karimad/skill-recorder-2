@@ -103,7 +103,7 @@ contextBridge.exposeInMainWorld("skillRecorder", {
     ipcRenderer.on(IPC.narrationStatusChanged, listener);
     return () => ipcRenderer.removeListener(IPC.narrationStatusChanged, listener);
   },
-  analyze: (sessionId) => ipcRenderer.invoke(IPC.analyze, sessionId),
+  analyze: (sessionId, options) => ipcRenderer.invoke(IPC.analyze, sessionId, options),
   analyzeFeedback: (input) => ipcRenderer.invoke(IPC.analyzeFeedback, input),
   getAnalysis: (sessionId) => ipcRenderer.invoke(IPC.getAnalysis, sessionId),
   updateAnalysis: (input) => ipcRenderer.invoke(IPC.updateAnalysis, input),

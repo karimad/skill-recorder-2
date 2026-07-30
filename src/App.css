@@ -1875,6 +1875,149 @@ button:focus-visible,
   color: var(--brand-ink);
 }
 
+/* On-device sensitive-detail review (pre-send gate) */
+.sensitive-review {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 640px;
+  border: 1px solid rgba(var(--rec-rgb), 0.45);
+  background: rgba(var(--rec-rgb), 0.06);
+  border-radius: 12px;
+  padding: 16px 16px 14px;
+  color: var(--text);
+}
+
+.sensitive-review-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.sensitive-review-icon {
+  flex: none;
+  font-size: 18px;
+  line-height: 1.2;
+  color: var(--rec);
+}
+
+.sensitive-review-head strong {
+  font-size: 14px;
+  color: var(--brand-ink);
+}
+
+.sensitive-review-sub {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.sensitive-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.sensitive-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 9px;
+  padding: 9px 11px;
+}
+
+.sensitive-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.sensitive-dot.sev-high {
+  background: var(--rec);
+  box-shadow: 0 0 6px rgba(var(--rec-rgb), 0.5);
+}
+
+.sensitive-dot.sev-medium {
+  background: var(--warn);
+}
+
+.sensitive-item-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sensitive-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sensitive-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.sensitive-source {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.sensitive-count {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.sensitive-snippet {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--muted);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.sensitive-caveat {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.sensitive-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.record-cta.danger {
+  background: var(--rec);
+  box-shadow: 0 2px 12px -3px rgba(var(--rec-rgb), 0.45);
+}
+
+.record-cta.danger:not(:disabled):hover {
+  filter: brightness(1.06);
+  box-shadow: 0 3px 16px -3px rgba(var(--rec-rgb), 0.55);
+}
+
 .voice-card {
   display: flex;
   align-items: center;

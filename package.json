@@ -14,7 +14,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "typecheck:evals": "tsc --noEmit -p evals/tsconfig.json",
-    "test": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs --test common/audio.test.ts common/microphone.test.ts common/narration.test.ts electron/recording-controls-bounds.test.ts electron/recording-privacy.test.ts electron/recorder/controller.test.ts electron/frames/extractor.test.ts electron/narration/audio-analysis.test.ts electron/narration/analyze-gate.test.ts electron/narration/transcribe.test.ts electron/narration/whisper.test.ts electron/sessions.test.ts electron/debug-bundle.test.ts scripts/compliance.test.mjs",
+    "test": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs --test common/audio.test.ts common/microphone.test.ts common/narration.test.ts common/sensitive.test.ts electron/recording-controls-bounds.test.ts electron/recording-privacy.test.ts electron/recorder/controller.test.ts electron/frames/extractor.test.ts electron/narration/audio-analysis.test.ts electron/narration/analyze-gate.test.ts electron/narration/transcribe.test.ts electron/narration/whisper.test.ts electron/sensitive/scanner.test.ts electron/sessions.test.ts electron/debug-bundle.test.ts scripts/compliance.test.mjs",
     "eval": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/run.ts",
     "eval:builder": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/builder/run.ts",
     "eval:skill": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/skillbuilder/run.ts",
@@ -31,6 +31,9 @@
   "dependencies": {
     "@github/copilot-sdk": "^1.0.6",
     "@huggingface/transformers": "^4.2.0",
+    "@secretlint/core": "^13.0.4",
+    "@secretlint/secretlint-rule-pattern": "^13.0.4",
+    "@secretlint/secretlint-rule-preset-recommend": "^13.0.4",
     "archiver": "^7.0.1",
     "koffi": "^3.1.1",
     "react": "^19.2.5",
