@@ -223,10 +223,10 @@ the web hosts are forbidden: `cowork-teams-digest` (read a channel then post via
 ## Sensitive detection + redaction evals (`evals/sensitive/`)
 
 Guards the **on-device sanitization pipeline** that runs before anything is sent to
-GitHub Copilot on Analyze: the three detection layers (secretlint secrets · our
-in-repo structured-PII regex · the opt-in `Xenova/bert-base-NER` named-entity
-layer) and the two redaction seams (masking outgoing **text** channels, and OCR +
-blur of on-screen values in **frames** under Advanced protection).
+GitHub Copilot on Analyze: the two detection layers (secretlint secrets · our
+in-repo structured-PII regex) and the two redaction seams (masking outgoing
+**text** channels, and OCR + blur of on-screen values in **frames** under Advanced
+protection).
 
 ```bash
 npm run eval:sensitive                 # all cases (text + frames)
@@ -236,21 +236,20 @@ npm run eval:sensitive -- --verbose    # also print the redacted text / blur sum
 
 Unlike the describer/builder harnesses this one is **fully deterministic — no LLM,
 no model weights, no network** (exit code non-zero on any failure). secretlint and
-our regex run for real; the NER layer is driven by a stub pipeline built from each
-case's ground-truth entities, and the frame layer supplies OCR words + boxes
-directly (no tesseract/sharp) so the box-mapping is exercised offline.
+our regex run for real; the frame layer supplies OCR words + boxes directly (no
+tesseract/sharp) so the box-mapping is exercised offline.
 
 **Corpus.**
 - `corpus.ts` — one outgoing text string per case with two ground-truth lists:
   `mustRedact` (values that must be masked — recall) and `mustKeep` (ordinary text
   that must survive — precision). Covers every secret type, each structured-PII
   detector **and its validators** (Luhn-invalid card / invalid-area SSN are *not*
-  flagged), NER person/org/location, NER gating (MISC + low-confidence dropped),
-  multi-detector strings, and clean prose/URLs/hashes.
+  flagged), a check that personal names are **not** redacted (the names layer was
+  dropped), multi-detector strings, and clean prose/URLs/hashes.
 - `frames.ts` — synthetic OCR word layouts with the sensitive words flagged. Covers
   a secret/email on screen, a card split across four OCR tokens (all four blur), a
-  session value known from clean text blurred across two words (cross-feed), an NER
-  org over OCR text, and a clean frame (nothing blurred).
+  session value known from clean text blurred across OCR words (cross-feed), and a
+  clean frame (nothing blurred).
 
 **Rubric** (`score.ts`): a text case runs the real detectors → `redactText` and
 checks every `mustRedact` value is gone from the output while every `mustKeep`
@@ -269,7 +268,7 @@ runs the **real `Ocr` engine** + the shared detectors via `sensitiveFrameBoxes`,
 checks each sensitive line gets a blur box while clean lines are left alone.
 
 ```bash
-npm run eval:sensitive:ocr             # eng + a multilingual (jpn) case
+npm run eval:sensitive:ocr             # renders text → JPEG, real Tesseract (English)
 npm run eval:sensitive:ocr -- --keep   # also print each case's recognized OCR text
 ```
 
@@ -281,7 +280,9 @@ rather than failing. Scoring is layout-based and OCR-jitter tolerant: each line 
 rendered in its own fixed-height band, recall = "a blur box lands on a sensitive
 line", precision = "no box lands on a clean line". Cases cover a GitHub token, a
 credit card + email, a known-value cross-feed, and a Latin email amid Japanese text
-(exercising the `jpn`+`eng` traineddata path the language picker downloads).
+read with **English-only** traineddata (the ASCII value is recognized and blurred
+even though the surrounding Japanese OCRs to garbage — validating the eng-only
+product decision).
 
 ## Mock pages (`evals/mocks/`)
 
