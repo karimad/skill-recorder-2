@@ -1,9 +1,8 @@
 // Deterministic, LLM-free scoring for the sensitive-detail evals.
 //
-// Runs the SAME detection layers the Analyze pipeline uses — secretlint (secrets),
-// our in-repo structured-PII regex, and (for cases that carry NER hints) the
-// opt-in named-entity layer via a stub pipeline — then applies the real text
-// redactor. A case passes only when BOTH hold:
+// Runs the SAME detection layers the Analyze pipeline uses — secretlint (secrets)
+// and our in-repo structured-PII regex — then applies the real text redactor. A
+// case passes only when BOTH hold:
 //   - recall: every `mustRedact` value is gone from the redacted text, and
 //   - precision: every `mustKeep` value survives, and clean cases yield no findings.
 // This exercises detection and redaction end to end: a raw value that is detected
@@ -16,11 +15,9 @@ import {
   type SensitiveMatch,
 } from "../../common/sensitive";
 import { scanSecrets } from "../../electron/sensitive/secrets";
-import { runNer } from "../../electron/sensitive/ner";
 import { sensitiveFrameBoxes, type FrameBox } from "../../electron/sensitive/frame-redact";
 import type { OcrWord } from "../../electron/sensitive/ocr";
-import type { NerEntity, NerPipeline } from "../../electron/sensitive/ner-model";
-import type { NerHint, SensitiveCase } from "./corpus";
+import type { SensitiveCase } from "./corpus";
 import type { FrameCase } from "./frames";
 
 export interface Check {
@@ -40,42 +37,17 @@ export interface CaseScore {
   checks: Check[];
 }
 
-/** A deterministic NER pipeline built from a case's ground-truth entities: it
- *  locates each hinted word in the given text and returns it with a high score,
- *  standing in for the real transformers.js model so evals run offline. */
-function stubPipeline(hints: NerHint[]): NerPipeline {
-  const fn = async (text: string): Promise<NerEntity[]> => {
-    const out: NerEntity[] = [];
-    for (const h of hints) {
-      const start = text.indexOf(h.word);
-      if (start < 0) continue;
-      out.push({
-        entity_group: h.group,
-        word: h.word,
-        start,
-        end: start + h.word.length,
-        score: h.score ?? 0.99,
-      });
-    }
-    return out;
-  };
-  return fn as unknown as NerPipeline;
-}
-
 /** All detection layers merged and de-overlapped, exactly as the scanner does. */
-export async function detect(text: string, ner?: NerHint[]): Promise<SensitiveMatch[]> {
-  const [secrets, nerMatches] = await Promise.all([
-    scanSecrets(text),
-    ner && ner.length ? runNer(text, stubPipeline(ner)) : Promise.resolve<SensitiveMatch[]>([]),
-  ]);
+export async function detect(text: string): Promise<SensitiveMatch[]> {
+  const secrets = await scanSecrets(text);
   const pii = scanStructuredPii(text);
-  return resolveOverlaps([...secrets, ...pii, ...nerMatches]);
+  return resolveOverlaps([...secrets, ...pii]);
 }
 
 const short = (s: string): string => (s.length <= 24 ? s : `${s.slice(0, 10)}…${s.slice(-6)}`);
 
 export async function scoreCase(c: SensitiveCase): Promise<CaseScore> {
-  const matches = await detect(c.text, c.ner);
+  const matches = await detect(c.text);
   const redacted = redactText(c.text, matches);
   const checks: Check[] = [];
 
@@ -186,7 +158,6 @@ export async function scoreFrameCase(frame: FrameCase): Promise<CaseScore> {
       width,
       height,
       knownValues: frame.knownValues ?? [],
-      nerPipeline: frame.ner && frame.ner.length ? stubPipeline(frame.ner) : null,
     },
   );
 

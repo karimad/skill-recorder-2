@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { NerEntity, NerPipeline } from "./ner-model";
 import { buildRedactor, scanSession } from "./scanner";
 
 const STARTED_AT = 10_000;
@@ -57,13 +56,6 @@ async function seedSession(root: string, id: string): Promise<void> {
     }),
   );
 }
-
-/** A deterministic NER stub: flags PERSON wherever it appears, no weights/native deps. */
-const personPipeline: NerPipeline = (async (text: string): Promise<NerEntity[]> => {
-  const idx = text.indexOf(PERSON);
-  if (idx < 0) return [];
-  return [{ entity_group: "PER", word: PERSON, start: idx, end: idx + PERSON.length, score: 0.99 }];
-}) as unknown as NerPipeline;
 
 async function withSessionRoot(fn: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sensitive-"));
@@ -118,20 +110,15 @@ test("scanSession detects secrets + structured PII across sources and returns ra
   });
 });
 
-test("scanSession applies the injected NER pipeline (Advanced protection)", async () => {
+test("scanSession leaves personal names alone (NER layer removed)", async () => {
   await withSessionRoot(async (root) => {
-    const id = "ner-test";
+    const id = "names-test";
     await seedSession(root, id);
 
-    const withoutNer = await scanSession(id);
-    assert.ok(!withoutNer.report.findings.some((f) => f.category === "person"));
-    assert.ok(!withoutNer.values.includes(PERSON));
-
-    const withNer = await scanSession(id, { nerPipeline: personPipeline });
-    const person = withNer.report.findings.find((f) => f.category === "person");
-    assert.ok(person, "expected a person finding when NER is enabled");
-    assert.equal(person.label, "Person name");
-    assert.ok(withNer.values.includes(PERSON));
+    const { values } = await scanSession(id);
+    // The seeded marker note names a person; with the NER layer removed a bare name
+    // is neither detected nor added to the redaction values (secrets + PII only).
+    assert.ok(!values.includes(PERSON), "a bare name must not be a redaction value");
   });
 });
 

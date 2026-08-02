@@ -1,10 +1,10 @@
 // Frame OCR + blur for the opt-in Advanced protection layer. When Advanced
 // protection is on, screen frames the describer would send to GitHub Copilot are
 // first OCR'd on-device; any word whose text trips the same detectors used for the
-// session's text (secrets, structured PII, named entities) — or matches a value
-// already detected elsewhere in the session — is covered with an opaque box before
-// the JPEG leaves the machine. The OCR text itself is never sent; only the blurred
-// image is. Boxes are solid and irreversible (safer than a reversible blur).
+// session's text (secrets, structured PII) — or matches a value already detected
+// elsewhere in the session — is covered with an opaque box before the JPEG leaves
+// the machine. The OCR text itself is never sent; only the blurred image is. Boxes
+// are solid and irreversible (safer than a reversible blur).
 
 import { createRequire } from "node:module";
 
@@ -14,8 +14,6 @@ import {
   type SensitiveMatch,
 } from "../../common/sensitive";
 import { createLogger } from "../logger";
-import type { NerPipeline } from "./ner-model";
-import { runNer } from "./ner";
 import type { Ocr, OcrWord } from "./ocr";
 import { scanSecrets } from "./secrets";
 
@@ -55,17 +53,16 @@ export interface FrameBoxOptions {
   height: number;
   /** Values already detected in the session's text (cross-feed blur). */
   knownValues?: string[];
-  nerPipeline?: NerPipeline | null;
   /** Padding added around each detected word box, in pixels. */
   padding?: number;
 }
 
 /**
  * Map every sensitive region in a set of OCR words to a padded pixel box. Runs the
- * shared detectors (secrets + structured PII + optional NER) over the recognized
- * text, plus a literal search for known session values, then selects every OCR word
- * whose character span overlaps a match. Pure and side-effect-free (no sharp, no
- * image IO) so it can be exercised deterministically. Returns the boxes to blur.
+ * shared detectors (secrets + structured PII) over the recognized text, plus a
+ * literal search for known session values, then selects every OCR word whose
+ * character span overlaps a match. Pure and side-effect-free (no sharp, no image
+ * IO) so it can be exercised deterministically. Returns the boxes to blur.
  */
 export async function sensitiveFrameBoxes(words: OcrWord[], opts: FrameBoxOptions): Promise<FrameBox[]> {
   if (words.length === 0) return [];
@@ -82,7 +79,7 @@ export async function sensitiveFrameBoxes(words: OcrWord[], opts: FrameBoxOption
     spans.push({ start, end: joined.length, word });
   }
 
-  const matches = await matchesInOcrText(joined, knownValues, opts.nerPipeline ?? null);
+  const matches = await matchesInOcrText(joined, knownValues);
   if (matches.length === 0) return [];
 
   const rects: FrameBox[] = [];
@@ -102,12 +99,8 @@ export async function sensitiveFrameBoxes(words: OcrWord[], opts: FrameBoxOption
 async function matchesInOcrText(
   text: string,
   knownValues: string[],
-  nerPipeline: NerPipeline | null,
 ): Promise<SensitiveMatch[]> {
-  const [secrets, ner] = await Promise.all([
-    scanSecrets(text),
-    nerPipeline ? runNer(text, nerPipeline) : Promise.resolve<SensitiveMatch[]>([]),
-  ]);
+  const secrets = await scanSecrets(text);
   const pii = scanStructuredPii(text);
   const known: SensitiveMatch[] = [];
   for (const value of knownValues) {
@@ -123,7 +116,7 @@ async function matchesInOcrText(
       });
     }
   }
-  return resolveOverlaps([...secrets, ...pii, ...ner, ...known]);
+  return resolveOverlaps([...secrets, ...pii, ...known]);
 }
 
 /** A padded, image-clamped box for one OCR word. */
@@ -159,11 +152,19 @@ export const INACTIVE_FRAME_REDACTOR: FrameRedactor = {
   redactFrame: async () => null,
 };
 
+/** A fail-safe redactor for when Advanced protection is ON but the scan could not
+ *  run (e.g. it threw): `active` with `ready:false` makes get_frames WITHHOLD every
+ *  frame rather than serve raw pixels we never got a chance to inspect. */
+export const WITHHOLD_FRAME_REDACTOR: FrameRedactor = {
+  active: true,
+  ready: false,
+  redactFrame: async () => null,
+};
+
 export interface FrameRedactorOptions {
   ocr: Ocr | null;
   /** Values already detected in the session's text (cross-feed blur). */
   knownValues: string[];
-  nerPipeline: NerPipeline | null;
   /** Padding added around each detected word box, in pixels. */
   padding?: number;
 }
@@ -178,14 +179,12 @@ export class OcrFrameRedactor implements FrameRedactor {
   readonly active = true;
   private readonly ocr: Ocr | null;
   private readonly knownValues: string[];
-  private readonly nerPipeline: NerPipeline | null;
   private readonly padding: number;
   private readonly cache = new Map<string, Buffer | null>();
 
   constructor(opts: FrameRedactorOptions) {
     this.ocr = opts.ocr;
     this.knownValues = [...new Set(opts.knownValues.filter((v) => v.length >= 3))];
-    this.nerPipeline = opts.nerPipeline;
     this.padding = opts.padding ?? 4;
   }
 
@@ -225,7 +224,6 @@ export class OcrFrameRedactor implements FrameRedactor {
       width,
       height,
       knownValues: this.knownValues,
-      nerPipeline: this.nerPipeline,
       padding: this.padding,
     });
     if (boxes.length === 0) {

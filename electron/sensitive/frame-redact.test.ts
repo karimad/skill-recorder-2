@@ -23,7 +23,6 @@ test("frame is withheld (null) when OCR recognition throws", async () => {
       throw new Error("worker crashed");
     }),
     knownValues: [],
-    nerPipeline: null,
   });
   assert.equal(await redactor.redactFrame("/frames/whatever.jpg"), null);
   // Cached result is also the safe null (no second recognition attempt).

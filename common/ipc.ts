@@ -119,26 +119,22 @@ export interface AnalyzeResult {
   review?: SensitiveReport;
 }
 
-/** The two on-device model assets behind the opt-in "Advanced protection". */
+/** The on-device model asset behind the opt-in "Advanced protection". */
 export type SensitiveModelState = "missing" | "downloading" | "ready" | "error";
 
 /**
- * Status of the opt-in "Advanced protection" layer (local NER + frame OCR). The
- * persisted `enabled` opt-in is independent of whether the model files are
+ * Status of the opt-in "Advanced protection" layer (on-device frame OCR). The
+ * persisted `enabled` opt-in is independent of whether the model file is
  * downloaded: a user can turn it off while keeping the cache, or have it on while
  * a download is still in flight (in which case scans run the always-on layers and
- * the advanced ones join once ready).
+ * the frame-blur one joins once ready).
  */
 export interface SensitiveModelStatus {
   /** Persisted user opt-in. */
   enabled: boolean;
-  /** Local named-entity model (Xenova/bert-base-NER) weights. */
-  ner: SensitiveModelState;
   /** Tesseract OCR language data (for frame text detection). */
   ocr: SensitiveModelState;
-  /** The selected OCR language codes (tessdata_fast, e.g. `["eng","spa"]`). */
-  languages: string[];
-  /** Aggregate download progress 0–100 while either asset is downloading. */
+  /** Download progress 0–100 while the OCR asset is downloading. */
   progress: number | null;
   error: string | null;
 }
@@ -418,7 +414,7 @@ export const IPC = {
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
   sensitiveSetAdvanced: "sensitive:set-advanced",
-  sensitiveSetOcrLanguages: "sensitive:set-ocr-languages",
+  sensitiveDownloadModels: "sensitive:download-models",
   sensitiveStatusChanged: "sensitive:status-changed",
   analyze: "analyze:start",
   analyzeFeedback: "analyze:feedback",
@@ -444,6 +440,7 @@ export const IPC = {
   openLibrary: "ui:open-library",
   closeLibrary: "ui:close-library",
   recordingControlsExpanded: "ui:recording-controls-expanded",
+  fitRecorderHeight: "ui:fit-recorder-height",
 } as const;
 
 /** Shape exposed on `window.skillRecorder` by the preload bridge. */
@@ -477,15 +474,16 @@ export interface SkillRecorderApi {
   downloadNarrationModel(): Promise<NarrationActionResult>;
   transcribeNarration(sessionId: string): Promise<NarrationActionResult>;
   onNarrationStatusChanged(cb: (status: NarrationStatus) => void): () => void;
-  /** Current status of the opt-in "Advanced protection" models (NER + frame OCR). */
+  /** Current status of the opt-in "Advanced protection" model (frame OCR). */
   sensitiveModelStatus(): Promise<SensitiveModelStatus>;
-  /** Toggle "Advanced protection". Enabling downloads the models on first use and
-   *  persists the opt-in; disabling stops applying them but keeps the cache. */
+  /** Toggle "Advanced protection". Enabling only records the opt-in — it does NOT
+   *  download; call `downloadSensitiveModels` for that. Disabling stops applying the
+   *  model but keeps the cache. */
   setAdvancedProtection(enabled: boolean): Promise<SensitiveModelActionResult>;
-  /** Choose which languages OCR recognizes on screen frames (tessdata_fast codes).
-   *  Persists the selection; when Advanced is on, downloads any newly-required
-   *  language data and rebuilds the OCR engine. */
-  setOcrLanguages(codes: string[]): Promise<SensitiveModelActionResult>;
+  /** Download the on-device OCR data the enabled Advanced layer needs and warm the
+   *  engine. The deliberate "download" action, mirroring the voice model — safe to
+   *  call repeatedly. */
+  downloadSensitiveModels(): Promise<SensitiveModelActionResult>;
   onSensitiveModelStatusChanged(cb: (status: SensitiveModelStatus) => void): () => void;
   /** Run the Copilot describer on a session (defaults to the last completed one).
    *  Runs an on-device sensitive-detail scan first and redacts any flagged values
@@ -553,4 +551,7 @@ export interface SkillRecorderApi {
   closeLibrary(): Promise<void>;
   /** Resize the recording-controls window while an overlay panel is visible. */
   setRecordingControlsExpanded(expanded: boolean): Promise<void>;
+  /** Fit the compact recorder window to its rendered content height (fire-and-forget)
+   *  so the fixed-width HUD never shows dead space or clips a revealed row. */
+  fitRecorderHeight(height: number): void;
 }

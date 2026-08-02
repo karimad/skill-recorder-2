@@ -2,7 +2,6 @@ import { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen } from "elect
 
 import { FULL_CAPTURE } from "../common/config";
 import { IPC, type RecorderStatus, type StartResult } from "../common/ipc";
-import { defaultOcrLanguages } from "../common/ocr-languages";
 import { createCollectors } from "./collectors";
 import { Describer } from "./describer/describer";
 import { processSession } from "./pipeline";
@@ -24,6 +23,7 @@ import {
   createLibraryWindow,
   createRecorderWindow,
   createRecordingControlsWindow,
+  fitRecorderHeight,
   redockLibrary,
   setRecordingControlsExpanded,
 } from "./window";
@@ -224,7 +224,7 @@ app.whenReady().then(async () => {
     microphones,
     sensitiveModels,
   );
-  sensitiveModels.initialize(defaultOcrLanguages(app.getLocale()));
+  sensitiveModels.initialize();
   ipcMain.handle(IPC.start, () => requestStartRecording());
   ipcMain.handle(IPC.startConfirmed, () => startRecording());
   ipcMain.handle(IPC.recordingPrivacyReviewed, () => recordingPrivacy.markReviewed());
@@ -247,6 +247,18 @@ app.whenReady().then(async () => {
     }
     controlsExpanded = expanded;
     setRecordingControlsExpanded(win, expanded);
+  });
+  ipcMain.on(IPC.fitRecorderHeight, (event, height: unknown) => {
+    const win = recorderWindow;
+    if (
+      !win ||
+      win.isDestroyed() ||
+      event.sender !== win.webContents ||
+      typeof height !== "number"
+    ) {
+      return;
+    }
+    fitRecorderHeight(win, height);
   });
 
   recorder.onStatusChanged((status) => {

@@ -1,8 +1,8 @@
 // Sensitive-detail eval harness: runs the real on-device detection + redaction
-// pipeline (secretlint + structured-PII regex + opt-in NER via a deterministic
-// stub) over a fixed corpus and scores recall (every known secret/PII value is
-// masked before it could leave the machine) and precision (ordinary prose is left
-// intact). No model weights, no network, no LLM — fully deterministic.
+// pipeline (secretlint + structured-PII regex) over a fixed corpus and scores
+// recall (every known secret/PII value is masked before it could leave the
+// machine) and precision (ordinary prose is left intact). No model weights, no
+// network, no LLM — fully deterministic.
 //
 // Run:
 //   node --experimental-transform-types --import ./evals/register.mjs evals/sensitive/run.ts [flags]
@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   console.error(`\nSkill Recorder — sensitive detection + redaction evals`);
   console.error(`${textCases.length} text case(s) · ${frameCases.length} frame case(s)`);
 
-  console.error(`${bar}\nText channels (secretlint + structured PII + NER → redaction)`);
+  console.error(`${bar}\nText channels (secretlint + structured PII → redaction)`);
   const textScores: CaseScore[] = [];
   for (const c of textCases) textScores.push(await scoreCase(c));
   report(textScores, flags.verbose);

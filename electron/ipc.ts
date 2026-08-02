@@ -42,6 +42,7 @@ import { isValidSessionId } from "./recorder/session-store";
 import {
   INACTIVE_FRAME_REDACTOR,
   OcrFrameRedactor,
+  WITHHOLD_FRAME_REDACTOR,
   type FrameRedactor,
 } from "./sensitive/frame-redact";
 import type { SensitiveModelManager } from "./sensitive/model-manager";
@@ -143,28 +144,22 @@ export function registerIpc(
     if (typeof enabled !== "boolean") return { ok: false, error: "Invalid preference." };
     return sensitiveModels.setAdvanced(enabled);
   });
-  ipcMain.handle(IPC.sensitiveSetOcrLanguages, (_event, codes: unknown) => {
-    if (!Array.isArray(codes) || !codes.every((c) => typeof c === "string")) {
-      return { ok: false, error: "Invalid language selection." };
-    }
-    return sensitiveModels.setOcrLanguages(codes as string[]);
-  });
+  ipcMain.handle(IPC.sensitiveDownloadModels, () => sensitiveModels.downloadModels());
 
   /**
    * Run the on-device pre-send scan and build the redaction context threaded into
    * the describer. Always-on layers (secretlint + structured PII) run every time;
-   * the NER + frame-OCR layers only when Advanced protection is enabled and ready.
+   * the frame-OCR blur layer only when Advanced protection is enabled and ready.
    * Non-blocking: a scan failure returns an inert redactor so analysis still runs.
    */
   const buildRedaction = async (
     sessionId: string,
   ): Promise<{ redaction: RedactionContext; review?: AnalyzeResult["review"] }> => {
     try {
-      const nerPipeline = await sensitiveModels.getNerPipeline();
-      const { report, values } = await scanSession(sessionId, { nerPipeline });
+      const { report, values } = await scanSession(sessionId);
       const redactText = buildRedactor(values);
       const frameRedactor: FrameRedactor = sensitiveModels.isAdvancedEnabled()
-        ? new OcrFrameRedactor({ ocr: sensitiveModels.getOcr(), knownValues: values, nerPipeline })
+        ? new OcrFrameRedactor({ ocr: sensitiveModels.getOcr(), knownValues: values })
         : INACTIVE_FRAME_REDACTOR;
       return {
         redaction: { redactText, frameRedactor },
@@ -172,8 +167,14 @@ export function registerIpc(
       };
     } catch (err) {
       log.warn("sensitive scan failed; proceeding without redaction:", err instanceof Error ? err.message : err);
+      // Text can't be masked when the scan itself failed (we have no values), but if
+      // Advanced protection is on we must NOT fall back to serving raw frames — withhold
+      // them instead so a scan error can never leak on-screen secrets.
+      const frameRedactor = sensitiveModels.isAdvancedEnabled()
+        ? WITHHOLD_FRAME_REDACTOR
+        : INACTIVE_FRAME_REDACTOR;
       return {
-        redaction: { redactText: (t) => t, frameRedactor: INACTIVE_FRAME_REDACTOR },
+        redaction: { redactText: (t) => t, frameRedactor },
       };
     }
   };

@@ -95,7 +95,7 @@ export function WhatsRecorded({
               timeline.
             </li>
             <li>
-              The recording can be turned into text on this computer using an offline model. The
+              The recording can be turned into text on this computer using an on-device model. The
               transcript stays in the language you select from Whisper's 99 supported choices. The
               first transcription needs a one-time ~252 MB download that you choose when to start.
             </li>
@@ -121,6 +121,29 @@ export function WhatsRecorded({
               recorded) are sent to GitHub&apos;s cloud service and processed by GitHub Copilot.
             </li>
           </ul>
+        </section>
+
+        <section className="sheet-block">
+          <h3>Advanced protection (only if you turn it on)</h3>
+          <p className="sheet-note">
+            Off by default. Turn it on with Advanced protection in the recorder; it needs a
+            one-time download.
+          </p>
+          <ul>
+            <li>
+              Before anything is sent, it reads the text in your screen images on-device and blurs
+              sensitive matches—keys, emails, ID numbers—out of the images, the same scan already
+              run over recorded text.
+            </li>
+            <li>
+              It all runs on this computer and never blocks Analyze. If the model is not ready,
+              screen images are held back rather than sent unblurred.
+            </li>
+          </ul>
+          <p className="sheet-caution">
+            No method is 100% effective—it can miss details or mask the wrong ones. Treat it as a
+            safety net, not a guarantee, and still avoid capturing anything secret.
+          </p>
         </section>
 
         <section className="sheet-block">

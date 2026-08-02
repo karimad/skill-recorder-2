@@ -7,22 +7,16 @@ import type {
   SensitiveModelStatus,
 } from "../../common/ipc";
 import { createLogger } from "../logger";
-import {
-  getNerPipeline,
-  isNerModelCached,
-  modelsCacheDir,
-  type ModelLoadProgress,
-  type NerPipeline,
-} from "./ner-model";
-import { Ocr, tessdataFileName } from "./ocr";
-import {
-  DEFAULT_OCR_LANGUAGE,
-  normalizeOcrLanguages,
-} from "../../common/ocr-languages";
+import { modelsCacheDir, Ocr, tessdataFileName } from "./ocr";
 
 const log = createLogger("Sensitive/models");
 
-/** Apache-2.0 fast LSTM models (a few MB each). Fetched once into the models dir. */
+/** Advanced protection reads on-screen text with English (Latin) OCR. Every value
+ *  it looks for — keys, tokens, emails, cards, IDs — is ASCII by construction, so
+ *  English OCR reads them on any-language UI; there is nothing to select. */
+const OCR_LANGUAGE = "eng";
+
+/** Apache-2.0 fast LSTM model (a few MB). Fetched once into the models dir. */
 function tessdataUrl(code: string): string {
   return `https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/${tessdataFileName(code)}`;
 }
@@ -41,37 +35,21 @@ function tessdataDir(): string {
   return path.join(modelsCacheDir(), "tessdata");
 }
 
-function isTessdataCached(code: string): boolean {
-  return existsSync(path.join(tessdataDir(), tessdataFileName(code)));
-}
-
-/** The selected languages whose data is not yet on disk. */
-function missingTessdata(codes: readonly string[]): string[] {
-  return codes.filter((code) => !isTessdataCached(code));
-}
-
-/** OCR is ready to build only when every selected language's data is present. */
-function allTessdataCached(codes: readonly string[]): boolean {
-  return codes.length > 0 && codes.every(isTessdataCached);
+/** True once the English traineddata is on disk and the OCR engine can be built. */
+function isTessdataCached(): boolean {
+  return existsSync(path.join(tessdataDir(), tessdataFileName(OCR_LANGUAGE)));
 }
 
 interface AdvancedSettings {
   enabled: boolean;
-  languages: string[];
 }
 
-function readSettings(defaultLanguages: string[]): AdvancedSettings {
+function readSettings(): AdvancedSettings {
   try {
-    const raw = JSON.parse(readFileSync(settingsFile(), "utf8")) as {
-      enabled?: unknown;
-      languages?: unknown;
-    };
-    const langs = Array.isArray(raw.languages)
-      ? normalizeOcrLanguages(raw.languages.filter((l): l is string => typeof l === "string"))
-      : defaultLanguages;
-    return { enabled: raw.enabled === true, languages: langs };
+    const raw = JSON.parse(readFileSync(settingsFile(), "utf8")) as { enabled?: unknown };
+    return { enabled: raw.enabled === true };
   } catch {
-    return { enabled: false, languages: defaultLanguages };
+    return { enabled: false };
   }
 }
 
@@ -87,7 +65,7 @@ async function writeSettings(settings: AdvancedSettings): Promise<void> {
   }
 }
 
-/** Download one Tesseract language's data to the models dir (atomic temp+rename). */
+/** Download the Tesseract language data to the models dir (atomic temp+rename). */
 async function downloadTessdata(
   code: string,
   onProgress?: (percent: number) => void,
@@ -117,61 +95,56 @@ async function downloadTessdata(
 }
 
 /**
- * Owns the opt-in "Advanced protection" models: the local NER weights and the
- * Tesseract OCR language data, behind a single persisted `enabled` flag. Enabling
- * downloads whatever is missing (non-blocking to Analyze — a scan just runs the
- * always-on layers until these are ready); disabling stops applying them but keeps
- * the cache so re-enabling is instant. Never throws into the Analyze path: the
- * getters return null when the layer isn't available.
+ * Owns the opt-in "Advanced protection" model: the on-device Tesseract English OCR
+ * data, behind a single persisted `enabled` flag. Enabling only records the opt-in
+ * and (if the data is already cached) warms the engine — downloading is a
+ * *separate*, deliberate step (`downloadModels`), surfaced in the HUD "doctor" like
+ * the voice model. Disabling stops applying the layer but keeps the cache so
+ * re-enabling is instant. Never throws into the Analyze path: `getOcr` returns null
+ * when the layer isn't available.
  */
 export class SensitiveModelManager {
   private current: SensitiveModelStatus = {
     enabled: false,
-    ner: "missing",
     ocr: "missing",
-    languages: [DEFAULT_OCR_LANGUAGE],
     progress: null,
     error: null,
   };
-  private languages: string[] = [DEFAULT_OCR_LANGUAGE];
   private ocr: Ocr | null = null;
-  private enableTask: Promise<SensitiveModelActionResult> | null = null;
-  private ocrTask: Promise<SensitiveModelActionResult> | null = null;
+  private downloadTask: Promise<SensitiveModelActionResult> | null = null;
+  /** Bumped on every enable/disable. A warm that started under an older generation
+   *  refuses to publish, so `this.ocr` (and the "ready" status) can never reflect an
+   *  engine built for a since-disabled layer. */
+  private ocrGen = 0;
+  /** Serializes engine build/warm/terminate so concurrent lifecycle ops never spin up
+   *  overlapping worker pools or race the published engine. */
+  private ocrLifecycle: Promise<unknown> = Promise.resolve();
+  /** Serializes settings writes so a reported success always reflects a completed,
+   *  in-order persist. */
+  private settingsChain: Promise<unknown> = Promise.resolve();
 
-  /** @param defaultLanguages selection for a fresh install (e.g. OS-locale + English). */
-  constructor(
-    private readonly emitStatus: (status: SensitiveModelStatus) => void,
-    defaultLanguages: string[] = [DEFAULT_OCR_LANGUAGE],
-  ) {
-    this.languages = normalizeOcrLanguages(defaultLanguages);
-  }
+  constructor(private readonly emitStatus: (status: SensitiveModelStatus) => void) {}
 
-  /** Load the persisted opt-in and reflect what's cached. Kicks off background
-   *  readiness (loading the NER pipeline, warming OCR) when already enabled.
-   *  @param defaultLanguages OCR languages for a fresh install (OS-locale aware). */
-  initialize(defaultLanguages?: string[]): void {
-    if (defaultLanguages && defaultLanguages.length) {
-      this.languages = normalizeOcrLanguages(defaultLanguages);
-    }
-    const settings = readSettings(this.languages);
-    this.languages = settings.languages;
+  /** Load the persisted opt-in and reflect what's cached. Warms already-downloaded
+   *  data so it's ready without a click — but never downloads on startup. */
+  initialize(): void {
+    const settings = readSettings();
     this.current = {
       enabled: settings.enabled,
-      ner: isNerModelCached() ? "ready" : "missing",
-      ocr: allTessdataCached(this.languages) ? "ready" : "missing",
-      languages: [...this.languages],
+      ocr: isTessdataCached() ? "ready" : "missing",
       progress: null,
       error: null,
     };
-    if (settings.enabled && allTessdataCached(this.languages)) {
-      this.ocr = new Ocr({ langPath: tessdataDir(), languages: this.languages });
-    }
     this.emit();
-    if (settings.enabled) void this.setAdvanced(true); // resume any pending download; warm assets
+    // Warm OCR from cache (no network) so a returning, fully-provisioned user is
+    // immediately ready. If it's missing, the doctor shows a download action.
+    if (settings.enabled && isTessdataCached()) {
+      void this.warmFromCache(this.ocrGen);
+    }
   }
 
   status(): SensitiveModelStatus {
-    return { ...this.current, languages: [...this.current.languages] };
+    return { ...this.current };
   }
 
   isAdvancedEnabled(): boolean {
@@ -179,61 +152,39 @@ export class SensitiveModelManager {
   }
 
   isAdvancedReady(): boolean {
-    return this.current.enabled && this.current.ner === "ready" && this.current.ocr === "ready";
+    return this.current.enabled && this.current.ocr === "ready";
   }
 
-  /** Toggle Advanced protection. Enabling persists the opt-in and ensures both
-   *  assets (downloading on first use); disabling persists it off and releases OCR
-   *  workers while keeping the cache. */
-  setAdvanced(enabled: boolean): Promise<SensitiveModelActionResult> {
+  /** Toggle Advanced protection. Enabling records the opt-in (downloading is deferred
+   *  to `downloadModels`); disabling persists it off and releases OCR workers while
+   *  keeping the cache. */
+  async setAdvanced(enabled: boolean): Promise<SensitiveModelActionResult> {
     if (!enabled) return this.disable();
-    if (this.enableTask) return this.enableTask;
-    const task = this.enable();
-    this.enableTask = task;
-    void task.finally(() => {
-      if (this.enableTask === task) this.enableTask = null;
+
+    const gen = ++this.ocrGen;
+    this.update({
+      enabled: true,
+      ocr: isTessdataCached() ? "ready" : "missing",
+      error: null,
     });
-    return task;
+    const persisted = await this.persistSettings({ enabled: true });
+    // If the data is already on disk, warm it so it's usable right away; otherwise
+    // leave the "missing" state for the doctor's download action to resolve.
+    if (isTessdataCached()) void this.warmFromCache(gen);
+    return persisted;
   }
 
-  /** Change the OCR languages. Persists the selection and, when Advanced is enabled,
-   *  downloads any newly-required language data and rebuilds the worker pool. A no-op
-   *  set (same languages) still returns the current readiness. */
-  setOcrLanguages(codes: readonly string[]): Promise<SensitiveModelActionResult> {
-    const next = normalizeOcrLanguages(codes);
-    const changed = next.join("+") !== this.languages.join("+");
-    this.languages = next;
-    if (!this.current.enabled) {
-      // Persist the choice; reflect (but don't fetch) what's cached for it.
-      void writeSettings({ enabled: false, languages: next });
-      this.update({ languages: [...next], ocr: allTessdataCached(next) ? "ready" : "missing" });
-      return Promise.resolve({ ok: true });
-    }
-    if (!changed && this.ocr && this.current.ocr === "ready") {
-      return Promise.resolve({ ok: true });
-    }
-    if (this.ocrTask) return this.ocrTask;
-    const task = this.applyOcrLanguages(next);
-    this.ocrTask = task;
+  /** Download the OCR data (if missing) and warm the engine. The deliberate
+   *  "download" action behind the HUD doctor row; safe to call repeatedly. */
+  downloadModels(): Promise<SensitiveModelActionResult> {
+    if (!this.current.enabled) return Promise.resolve({ ok: false, error: "Advanced protection is off." });
+    if (this.downloadTask) return this.downloadTask;
+    const task = this.provisionOcr();
+    this.downloadTask = task;
     void task.finally(() => {
-      if (this.ocrTask === task) this.ocrTask = null;
+      if (this.downloadTask === task) this.downloadTask = null;
     });
     return task;
-  }
-
-  /** The NER pipeline when Advanced is enabled and the model is cached, else null.
-   *  Never downloads here (that only happens via the toggle). */
-  async getNerPipeline(): Promise<NerPipeline | null> {
-    if (!this.current.enabled || !isNerModelCached()) return null;
-    try {
-      const pipe = await getNerPipeline({ allowDownload: false });
-      if (this.current.ner !== "ready") this.update({ ner: "ready" });
-      return pipe;
-    } catch (err) {
-      log.warn("NER load failed:", message(err));
-      this.update({ ner: "error", error: message(err) });
-      return null;
-    }
   }
 
   /** The OCR engine when Advanced is enabled and language data is present, else
@@ -252,85 +203,121 @@ export class SensitiveModelManager {
 
   // --- internals -----------------------------------------------------------
 
-  private async enable(): Promise<SensitiveModelActionResult> {
-    await writeSettings({ enabled: true, languages: this.languages });
-    this.update({ enabled: true, languages: [...this.languages], error: null });
-
-    let firstError: string | null = null;
-
-    // NER weights (the large asset — drives the visible progress).
-    if (!isNerModelCached()) this.update({ ner: "downloading", progress: 0 });
+  /** Download the English data (if missing) then warm the worker pool so readiness
+   *  is genuine. Skips publishing if the layer was disabled while fetching. */
+  private async provisionOcr(): Promise<SensitiveModelActionResult> {
+    const gen = this.ocrGen;
+    this.update({ error: null });
     try {
-      await getNerPipeline({
-        allowDownload: true,
-        onProgress: (p) => this.onNerProgress(p),
-      });
-      this.update({ ner: "ready", progress: null });
-    } catch (err) {
-      firstError ??= message(err);
-      this.update({ ner: isNerModelCached() ? "ready" : "error", progress: null, error: message(err) });
-    }
-
-    // OCR language data (small) + warm the worker pool so readiness is genuine.
-    const ocrError = await this.ensureOcrReady();
-    if (ocrError) firstError ??= ocrError;
-
-    return firstError ? { ok: false, error: firstError } : { ok: true };
-  }
-
-  /** Rebuild the OCR engine for a new language selection (Advanced already on). */
-  private async applyOcrLanguages(next: string[]): Promise<SensitiveModelActionResult> {
-    await writeSettings({ enabled: true, languages: next });
-    this.update({ languages: [...next], error: null });
-    const ocr = this.ocr;
-    this.ocr = null;
-    if (ocr) await ocr.terminate();
-    const err = await this.ensureOcrReady();
-    return err ? { ok: false, error: err } : { ok: true };
-  }
-
-  /** Download any missing selected language data, then build + warm the pool.
-   *  Returns an error message on failure (and leaves OCR null / state "error"). */
-  private async ensureOcrReady(): Promise<string | null> {
-    try {
-      const missing = missingTessdata(this.languages);
-      if (missing.length) {
-        this.update({ ocr: "downloading" });
-        for (const code of missing) await downloadTessdata(code);
+      if (!isTessdataCached()) {
+        this.update({ ocr: "downloading", progress: 0 });
+        await downloadTessdata(OCR_LANGUAGE, (p) => this.onDownloadProgress(p));
       }
-      this.ocr = new Ocr({ langPath: tessdataDir(), languages: this.languages });
-      await this.ocr.warm();
-      this.update({ ocr: "ready" });
-      return null;
+      await this.buildAndWarmOcr(gen);
+      if (gen === this.ocrGen) this.update({ ocr: "ready", progress: null });
+      return { ok: true };
     } catch (err) {
-      this.ocr = null;
-      this.update({ ocr: "error", error: message(err) });
-      return message(err);
+      if (gen === this.ocrGen) this.update({ ocr: "error", progress: null, error: message(err) });
+      return { ok: false, error: message(err) };
     }
+  }
+
+  /** Rebuild the OCR pool from already-cached data (no network). */
+  private async warmFromCache(gen: number): Promise<SensitiveModelActionResult> {
+    try {
+      await this.buildAndWarmOcr(gen);
+      if (gen === this.ocrGen) this.update({ ocr: "ready", error: null });
+      return { ok: true };
+    } catch (err) {
+      if (gen === this.ocrGen) this.update({ ocr: "error", error: message(err) });
+      return { ok: false, error: message(err) };
+    }
+  }
+
+  /**
+   * Build + warm an OCR pool and publish it only if the layer is still enabled and
+   * the generation is unchanged. A failed warm or a since-disabled layer terminates
+   * the fresh engine, so no unready engine is ever handed to `getOcr()`. Serialized
+   * so overlapping lifecycle ops can't spin up competing pools.
+   */
+  private buildAndWarmOcr(gen: number): Promise<void> {
+    return this.runOcrLifecycle(async () => {
+      if (gen !== this.ocrGen || !this.current.enabled) return;
+      const next = new Ocr({ langPath: tessdataDir() });
+      try {
+        await next.warm();
+      } catch (err) {
+        await next.terminate();
+        throw err;
+      }
+      if (gen !== this.ocrGen || !this.current.enabled) {
+        // Enabled state changed while warming — discard this engine.
+        await next.terminate();
+        return;
+      }
+      const old = this.ocr;
+      this.ocr = next;
+      if (old) await old.terminate();
+    });
+  }
+
+  /** Terminate and drop the current OCR pool (serialized with builds). */
+  private releaseOcr(): Promise<void> {
+    return this.runOcrLifecycle(async () => {
+      const ocr = this.ocr;
+      this.ocr = null;
+      if (ocr) await ocr.terminate();
+    });
+  }
+
+  /** Run an OCR lifecycle op after any in-flight one, regardless of its outcome. */
+  private runOcrLifecycle<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.ocrLifecycle.then(fn, fn);
+    this.ocrLifecycle = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Persist settings in submission order and await completion so success is never
+   *  reported before the write lands. Returns a failure result instead of throwing. */
+  private persistSettings(settings: AdvancedSettings): Promise<SensitiveModelActionResult> {
+    const run = this.settingsChain.then(() => writeSettings(settings));
+    this.settingsChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run.then(
+      () => ({ ok: true }) as SensitiveModelActionResult,
+      (err) => {
+        log.warn("could not persist advanced-protection settings:", message(err));
+        return { ok: false, error: message(err) } as SensitiveModelActionResult;
+      },
+    );
   }
 
   private async disable(): Promise<SensitiveModelActionResult> {
-    await writeSettings({ enabled: false, languages: this.languages });
-    const ocr = this.ocr;
-    this.ocr = null;
-    if (ocr) await ocr.terminate();
-    // Keep the cache on disk; just reflect that the layer won't be applied. States
-    // fall back to whether the files are present so re-enabling is instant.
+    // Supersede any in-flight warm so it can't publish an engine after we've disabled.
+    this.update({ enabled: false });
+    ++this.ocrGen;
+    const persisted = await this.persistSettings({ enabled: false });
+    await this.releaseOcr();
+    // Keep the cache on disk; just reflect that the layer won't be applied. State
+    // falls back to whether the file is present so re-enabling is instant.
     this.update({
       enabled: false,
-      ner: isNerModelCached() ? "ready" : "missing",
-      ocr: allTessdataCached(this.languages) ? "ready" : "missing",
+      ocr: isTessdataCached() ? "ready" : "missing",
       progress: null,
       error: null,
     });
-    return { ok: true };
+    return persisted;
   }
 
-  private onNerProgress(progress: ModelLoadProgress): void {
-    if (progress.status !== "progress_total") return;
-    const percent = Math.max(0, Math.min(100, Math.floor(progress.progress ?? 0)));
-    if (percent === this.current.progress) return;
-    this.update({ ner: "downloading", progress: percent });
+  private onDownloadProgress(percent: number): void {
+    const clamped = Math.max(0, Math.min(100, Math.floor(percent)));
+    if (clamped === this.current.progress) return;
+    this.update({ ocr: "downloading", progress: clamped });
   }
 
   private update(patch: Partial<SensitiveModelStatus>): void {

@@ -13,8 +13,14 @@ import { windowIcon } from "./icons";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Compact recording HUD — fixed footprint, never resizes. */
-const RECORDER = { width: 400, height: 534 };
+/** Compact recording HUD — fixed width; height auto-fits its content (see
+ *  `fitRecorderHeight`). The initial height is a sensible first paint before the
+ *  renderer reports its true content height. */
+const RECORDER = { width: 400, height: 500 };
+/** Guard rails for the content-driven height so a bad measurement can't produce a
+ *  degenerate window. */
+const RECORDER_MIN_HEIGHT = 320;
+const RECORDER_MAX_HEIGHT = 720;
 /** Library sizing bounds; actual width adapts to the space beside the recorder. */
 const LIBRARY = { desiredWidth: 1140, minWidth: 720, floorWidth: 520, maxHeight: 820 };
 const MARGIN = 12;
@@ -62,6 +68,26 @@ export function createRecorderWindow(): BrowserWindow {
   registerDevelopmentDevToolsShortcut(win);
   loadRoute(win);
   return win;
+}
+
+/**
+ * Fit the recorder window to the height the renderer reports for its content, so the
+ * fixed-width HUD shows neither dead space (short states) nor a clipped row (when the
+ * doctor reveals an extra model row). The width is preserved; the top-left is kept so
+ * it grows/shrinks downward. `resizable:false` blocks user resizing but not this
+ * programmatic sizing — on platforms that also block that, we briefly re-enable it.
+ */
+export function fitRecorderHeight(win: BrowserWindow, contentHeight: number): void {
+  if (win.isDestroyed() || !Number.isFinite(contentHeight)) return;
+  const target = Math.round(
+    Math.max(RECORDER_MIN_HEIGHT, Math.min(RECORDER_MAX_HEIGHT, contentHeight)),
+  );
+  const [width, current] = win.getContentSize();
+  if (Math.abs(current - target) < 1) return;
+  const wasResizable = win.isResizable();
+  if (!wasResizable) win.setResizable(true);
+  win.setContentSize(width, target);
+  if (!wasResizable) win.setResizable(false);
 }
 
 /** Always-on-top recording transport shown without stealing focus from the task. */

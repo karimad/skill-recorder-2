@@ -12,7 +12,7 @@
 // and SELF-SKIPS (exit 0) when the environment can't support it rather than failing.
 //
 // Run:
-//   npm run eval:sensitive:ocr            # eng + a multilingual (jpn) case
+//   npm run eval:sensitive:ocr            # renders text → JPEG, real Tesseract (English)
 //   npm run eval:sensitive:ocr -- --keep  # print each rendered case's OCR text
 
 import { createRequire } from "node:module";
@@ -83,9 +83,12 @@ const cases: OcrImageCase[] = [
     ],
   },
   {
-    id: "jpn-email-mixed",
-    about: "Latin email detected amid Japanese text (jpn + eng traineddata)",
-    languages: ["jpn", "eng"],
+    // The eng-only product decision in action: a Japanese screen with English-only
+    // traineddata loaded. The Latin email is ASCII, so eng OCR still reads (and
+    // blurs) it even though the surrounding Japanese lines come back as garbage.
+    id: "eng-only-email-amid-japanese",
+    about: "Latin email amid Japanese text, read with ENGLISH-ONLY traineddata",
+    languages: ["eng"],
     rows: [
       { text: "ログイン情報の確認", sensitive: false },
       { text: "メール: taro.yamada@example.co.jp", sensitive: true },

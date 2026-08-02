@@ -9,10 +9,20 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
+import { app } from "electron";
+
 import { createLogger } from "../logger";
 
 const require = createRequire(import.meta.url);
 const log = createLogger("Sensitive/ocr");
+
+/** Where downloaded on-device models live — shared with narration so one dir holds
+ *  them all. Overridable via SKILL_RECORDER_MODELS_DIR for tests/CI. */
+export function modelsCacheDir(): string {
+  const override = process.env.SKILL_RECORDER_MODELS_DIR;
+  if (override) return path.resolve(override);
+  return path.join(app.getPath("userData"), "models");
+}
 
 /** The (uncompressed) Tesseract language model filename for a tessdata code. */
 export function tessdataFileName(code: string): string {

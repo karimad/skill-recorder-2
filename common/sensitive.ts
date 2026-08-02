@@ -6,10 +6,9 @@
 // This module is pure and dependency-free so it can run in either process and be
 // unit-tested in isolation. It owns only the *structured* PII detectors (email,
 // payment card, SSN, phone) — high-precision, checksum-validated where possible.
-// The other two detection layers live in the Electron main process because they
-// need Node-only deps: secrets/credentials via `@secretlint/core`
-// (electron/sensitive/secrets.ts) and named entities via a local NER model
-// (electron/sensitive/ner.ts). All three layers emit {@link SensitiveMatch}es and
+// The other detection layer lives in the Electron main process because it needs a
+// Node-only dep: secrets/credentials via `@secretlint/core`
+// (electron/sensitive/secrets.ts). Both layers emit {@link SensitiveMatch}es and
 // are merged with {@link resolveOverlaps}. Nothing here ever emits or stores a raw
 // value on its own; callers use {@link maskValue} / {@link redactText}.
 
@@ -24,11 +23,7 @@ export type SensitiveCategory =
   | "email"
   | "credit-card"
   | "ssn"
-  | "phone"
-  // Named entities (local NER model, main process; opt-in "Advanced protection").
-  | "person"
-  | "location"
-  | "org";
+  | "phone";
 
 /** How strongly a finding should be treated as a real leak. */
 export type SensitiveSeverity = "high" | "medium" | "low";
@@ -334,11 +329,5 @@ export function categoryLabel(category: SensitiveCategory): string {
       return "Government ID";
     case "phone":
       return "Phone number";
-    case "person":
-      return "Person name";
-    case "location":
-      return "Location";
-    case "org":
-      return "Organization";
   }
 }

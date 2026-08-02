@@ -5,18 +5,8 @@
 //     text could be sent to GitHub Copilot (recall).
 //   - mustKeep: non-sensitive substrings that MUST survive redaction untouched
 //     (precision — guards against over-masking ordinary prose).
-// `ner` supplies the named entities an on-device NER model would return for the
-// text, so the opt-in "Advanced protection" layer can be exercised offline and
-// deterministically (no weights, no network) via a stub pipeline.
 //
 // All secrets/PII here are FAKE, shaped only to trip the detectors.
-
-export interface NerHint {
-  word: string;
-  group: "PER" | "LOC" | "ORG" | "MISC";
-  /** Model confidence; defaults to 0.99. Below the layer's gate → dropped. */
-  score?: number;
-}
 
 export interface SensitiveCase {
   id: string;
@@ -25,8 +15,6 @@ export interface SensitiveCase {
   text: string;
   mustRedact: string[];
   mustKeep: string[];
-  /** Named entities the local NER model would surface (Advanced protection). */
-  ner?: NerHint[];
 }
 
 const GH_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
@@ -124,34 +112,17 @@ export const sensitiveCorpus: SensitiveCase[] = [
   },
   {
     id: "mixed-multi",
-    about: "Several detectors + NER in one string (recall + ordering)",
+    about: "Several structured detectors in one string (recall + ordering)",
     text: "Email jane.doe@example.com or call 415-555-0132 for Ada Lovelace",
-    mustRedact: ["jane.doe@example.com", "415-555-0132", "Ada Lovelace"],
-    mustKeep: ["Email", "or call", "for"],
-    ner: [{ word: "Ada Lovelace", group: "PER" }],
+    mustRedact: ["jane.doe@example.com", "415-555-0132"],
+    mustKeep: ["Email", "or call", "for", "Ada Lovelace"],
   },
   {
-    id: "advanced-entities",
-    about: "Person / org / location via the opt-in NER layer",
+    id: "names-not-redacted",
+    about: "Personal names, orgs, and places are NOT redacted (names layer dropped)",
     text: "Met with Ada Lovelace from Contoso in Seattle to review the plan",
-    mustRedact: ["Ada Lovelace", "Contoso", "Seattle"],
-    mustKeep: ["Met with", "to review the plan"],
-    ner: [
-      { word: "Ada Lovelace", group: "PER" },
-      { word: "Contoso", group: "ORG" },
-      { word: "Seattle", group: "LOC" },
-    ],
-  },
-  {
-    id: "advanced-gated",
-    about: "NER MISC entity and a low-confidence hit are NOT redacted (precision)",
-    text: "Reviewed the Titanic exhibit near Redmond with the team",
     mustRedact: [],
-    mustKeep: ["Titanic", "Redmond", "Reviewed the"],
-    ner: [
-      { word: "Titanic", group: "MISC" },
-      { word: "Redmond", group: "LOC", score: 0.4 },
-    ],
+    mustKeep: ["Ada Lovelace", "Contoso", "Seattle", "Met with", "to review the plan"],
   },
   {
     id: "clean-prose",

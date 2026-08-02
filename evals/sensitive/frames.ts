@@ -8,8 +8,6 @@
 // out left-to-right on one row with wide gaps, so a padded box only ever overlaps
 // its own word (no ambiguous neighbor overlap during scoring).
 
-import type { NerHint } from "./corpus";
-
 export interface FrameWord {
   text: string;
   /** True when this word's box must be covered before the frame is sent. */
@@ -22,8 +20,6 @@ export interface FrameCase {
   words: FrameWord[];
   /** Values already detected in the session's text (cross-feed blur). */
   knownValues?: string[];
-  /** Entities the local NER model would return over the joined OCR text. */
-  ner?: NerHint[];
 }
 
 export const frameCorpus: FrameCase[] = [
@@ -59,24 +55,16 @@ export const frameCorpus: FrameCase[] = [
   },
   {
     id: "frame-known-value-cross-feed",
-    about: "A person name known from clean session text, blurred across two OCR words",
+    about: "A phone number flagged in the session text, blurred on screen via cross-feed",
     words: [
-      { text: "with" },
-      { text: "Ada", sensitive: true },
-      { text: "Lovelace", sensitive: true },
-      { text: "here" },
+      { text: "call" },
+      { text: "+44", sensitive: true },
+      { text: "20", sensitive: true },
+      { text: "7946", sensitive: true },
+      { text: "0958", sensitive: true },
+      { text: "now" },
     ],
-    knownValues: ["Ada Lovelace"],
-  },
-  {
-    id: "frame-ner-org",
-    about: "An organization surfaced by the NER layer over OCR text",
-    words: [
-      { text: "joined" },
-      { text: "Contoso", sensitive: true },
-      { text: "review" },
-    ],
-    ner: [{ word: "Contoso", group: "ORG" }],
+    knownValues: ["+44 20 7946 0958"],
   },
   {
     id: "frame-clean",

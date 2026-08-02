@@ -16,8 +16,6 @@ import type { RecEvent, SessionMeta } from "../../common/types";
 import { readEvents } from "../frames/correlate";
 import { createLogger } from "../logger";
 import { sessionDir } from "../recorder/session-store";
-import type { NerPipeline } from "./ner-model";
-import { runNer } from "./ner";
 import { scanSecrets } from "./secrets";
 
 const log = createLogger("Sensitive");
@@ -41,11 +39,6 @@ export interface ScanResult {
   report: SensitiveReport;
   /** De-duplicated raw values detected across the session. */
   values: string[];
-}
-
-export interface ScanOptions {
-  /** When provided (Advanced protection on + model ready), also run NER. */
-  nerPipeline?: NerPipeline | null;
 }
 
 function str(v: unknown): string | undefined {
@@ -127,16 +120,10 @@ function collectFields(dir: string): ScanField[] {
 }
 
 /** Run every detection layer over one string and merge them (overlaps resolved). */
-async function matchesFor(
-  text: string,
-  nerPipeline: NerPipeline | null,
-): Promise<SensitiveMatch[]> {
-  const [secrets, ner] = await Promise.all([
-    scanSecrets(text),
-    nerPipeline ? runNer(text, nerPipeline) : Promise.resolve<SensitiveMatch[]>([]),
-  ]);
+async function matchesFor(text: string): Promise<SensitiveMatch[]> {
+  const secrets = await scanSecrets(text);
   const pii = scanStructuredPii(text);
-  return resolveOverlaps([...secrets, ...pii, ...ner]);
+  return resolveOverlaps([...secrets, ...pii]);
 }
 
 /** Stable identity for deduping the same value seen in the same kind of place. */
@@ -148,8 +135,7 @@ function findingKey(source: SensitiveSource, match: SensitiveMatch): string {
  * Scan one recording for potentially sensitive details in exactly the text that
  * Analyze would send to GitHub Copilot — window/document titles, URLs, clipboard
  * previews, terminal commands, markers, and transcribed voice narration. Runs the
- * always-on secret + structured-PII layers and, when a NER pipeline is supplied
- * (Advanced protection on and the model ready), the named-entity layer too.
+ * always-on secret + structured-PII detection layers.
  *
  * Runs entirely on this computer and is best-effort / non-throwing — an unreadable
  * artifact simply contributes no fields. Returns a redacted {@link SensitiveReport}
@@ -160,20 +146,16 @@ function findingKey(source: SensitiveSource, match: SensitiveMatch): string {
  * Note: this inspects text only. Secrets merely *visible* in screen frames are
  * handled separately by the frame OCR + blur seam in the describer's get_frames.
  */
-export async function scanSession(
-  sessionId: string,
-  options: ScanOptions = {},
-): Promise<ScanResult> {
+export async function scanSession(sessionId: string): Promise<ScanResult> {
   const dir = sessionDir(sessionId); // throws on an unsafe id (traversal guard)
   const fields = collectFields(dir);
-  const nerPipeline = options.nerPipeline ?? null;
 
   const byKey = new Map<string, SensitiveFinding>();
   const values = new Set<string>();
   for (const field of fields) {
     let matches: SensitiveMatch[];
     try {
-      matches = await matchesFor(field.text, nerPipeline);
+      matches = await matchesFor(field.text);
     } catch (err) {
       log.warn("field scan failed:", err instanceof Error ? err.message : err);
       continue;
