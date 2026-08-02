@@ -6,6 +6,7 @@ import type {
   AutomationBuildProgress,
   CopilotSignInResult,
   NarrationStatus,
+  SensitiveModelStatus,
   SensitiveReport,
   SessionSummary,
   SkillBuildProgress,
@@ -106,6 +107,7 @@ export function Library() {
             onDelete={deleteSession}
           />
         </div>
+        <AdvancedProtectionToggle />
       </aside>
       <main className="lib-detail">
         {selected ? (
@@ -122,6 +124,77 @@ export function Library() {
           </div>
         )}
       </main>
+    </div>
+  );
+}
+
+/* --- Advanced protection toggle ------------------------------------------ */
+
+function advancedSummary(status: SensitiveModelStatus | null): { label: string; tone: string } {
+  if (!status) return { label: "Checking…", tone: "muted" };
+  if (!status.enabled) return { label: "Off", tone: "muted" };
+  if (status.ner === "downloading" || status.ocr === "downloading") {
+    const pct = status.progress != null ? ` ${Math.round(status.progress)}%` : "";
+    return { label: `Downloading models…${pct}`, tone: "busy" };
+  }
+  if (status.ner === "error" || status.ocr === "error") {
+    return { label: status.error ? `Error: ${status.error}` : "Model error", tone: "error" };
+  }
+  if (status.ner === "ready" && status.ocr === "ready") return { label: "On", tone: "on" };
+  return { label: "Preparing…", tone: "busy" };
+}
+
+/**
+ * HUD opt-in for the local "Advanced protection" layer (NER names + frame OCR/blur).
+ * The persisted opt-in is independent of the cached models: turning it on downloads
+ * them on first use, turning it off keeps the cache. Always-on text detection
+ * (secrets + structured PII) is unaffected by this toggle.
+ */
+function AdvancedProtectionToggle() {
+  const [status, setStatus] = useState<SensitiveModelStatus | null>(null);
+  const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    void window.skillRecorder.sensitiveModelStatus().then(setStatus);
+    return window.skillRecorder.onSensitiveModelStatusChanged(setStatus);
+  }, []);
+
+  const toggle = useCallback(async () => {
+    if (!status) return;
+    const next = !status.enabled;
+    setPending(true);
+    setStatus((s) => (s ? { ...s, enabled: next } : s)); // optimistic; real state follows
+    const res = await window.skillRecorder.setAdvancedProtection(next);
+    if (!res.ok) void window.skillRecorder.sensitiveModelStatus().then(setStatus);
+    setPending(false);
+  }, [status]);
+
+  const info = advancedSummary(status);
+  const enabled = status?.enabled ?? false;
+
+  return (
+    <div className="adv-protect">
+      <div className="adv-protect-row">
+        <div className="adv-protect-copy">
+          <span className="adv-protect-title">Advanced protection</span>
+          <span className={`adv-protect-state tone-${info.tone}`}>{info.label}</span>
+        </div>
+        <button
+          role="switch"
+          aria-checked={enabled}
+          aria-label="Advanced protection"
+          className={`adv-switch${enabled ? " on" : ""}`}
+          onClick={() => void toggle()}
+          disabled={pending || status == null}
+        >
+          <span className="adv-switch-knob" />
+        </button>
+      </div>
+      <p className="adv-protect-note">
+        Adds on-device name detection and blurs sensitive text inside screen frames before they
+        are sent. Turning it on downloads two local models (~110&nbsp;MB) once; secrets and
+        personal details in text are always protected regardless.
+      </p>
     </div>
   );
 }
@@ -474,8 +547,8 @@ function AnalysisWorkspace({
   const [analyzing, setAnalyzing] = useState(false);
   const [statusLine, setStatusLine] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // Set when the on-device pre-send scan holds analysis for review; cleared on the
-  // next run (either "Analyze anyway" or a fresh attempt).
+  // Informational summary of what the on-device scan redacted before sending;
+  // set alongside a successful analysis, cleared at the start of the next run.
   const [review, setReview] = useState<SensitiveReport | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -554,7 +627,7 @@ function AnalysisWorkspace({
   }, [sessionId]);
 
   const run = useCallback(
-    async (opts?: { acknowledge?: boolean }) => {
+    async () => {
       canceled.current = false;
       setEditing(false);
       setDraftTitle("");
@@ -563,17 +636,14 @@ function AnalysisWorkspace({
       setError(null);
       setAnalyzing(true);
       setStatusLine("Starting…");
-      const res = await window.skillRecorder.analyze(
-        sessionId,
-        opts?.acknowledge ? { acknowledgeSensitive: true } : undefined,
-      );
+      const res = await window.skillRecorder.analyze(sessionId);
       if (res.ok && res.analysis) {
         setAnalysis(res.analysis);
         setSteps(res.analysis.steps);
         stepsDirty.current = false;
-      } else if (res.review && !res.ok) {
-        // On-device scan held it back before anything was sent — show the review.
-        setReview(res.review);
+        // Non-blocking: analysis already ran. If anything was redacted before it
+        // was sent, show an informational summary alongside the result.
+        setReview(res.review ?? null);
       } else if (!canceled.current) setError(res.error ?? "Analysis failed");
       setAnalyzing(false);
       void onChanged();
@@ -705,7 +775,7 @@ function AnalysisWorkspace({
           <p className="ws-note">Still processing this recording… try again in a moment.</p>
         )}
 
-        {summary.processed && !analysis && !analyzing && !review && (
+        {summary.processed && !analysis && !analyzing && (
           <div className="ws-empty">
             <p className="ws-empty-lead">See what you did in this recording, step by step.</p>
             <button className="record-cta" onClick={() => void run()}>
@@ -722,8 +792,9 @@ function AnalysisWorkspace({
                   credentials, secrets, or other sensitive or confidential information.
                 </span>{" "}
                 Before anything is sent, Skill Recorder scans this text on your computer and
-                flags likely secrets or personal details for you to review — but this text-only
-                check can miss things, so it&apos;s a safety net, not a guarantee.
+                automatically redacts likely secrets and personal details — but this check can
+                miss things, so it&apos;s a safety net, not a guarantee. Turn on Advanced
+                protection to also detect names and blur sensitive text inside screen frames.
               </p>
             </details>
             {voicePending && (
@@ -737,12 +808,7 @@ function AnalysisWorkspace({
         )}
 
         {summary.processed && review && !analyzing && (
-          <SensitiveReview
-            report={review}
-            busy={analyzing}
-            onCancel={() => setReview(null)}
-            onProceed={() => void run({ acknowledge: true })}
-          />
+          <SensitiveReview report={review} onDismiss={() => setReview(null)} />
         )}
 
         {analyzing && (

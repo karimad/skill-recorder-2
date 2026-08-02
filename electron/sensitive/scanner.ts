@@ -5,7 +5,8 @@ import { NARRATION_FILE, type NarrationTranscript } from "../../common/narration
 import {
   maskValue,
   redactedSnippet,
-  scanText,
+  resolveOverlaps,
+  scanStructuredPii,
   type SensitiveFinding,
   type SensitiveMatch,
   type SensitiveReport,
@@ -15,16 +16,36 @@ import type { RecEvent, SessionMeta } from "../../common/types";
 import { readEvents } from "../frames/correlate";
 import { createLogger } from "../logger";
 import { sessionDir } from "../recorder/session-store";
+import type { NerPipeline } from "./ner-model";
+import { runNer } from "./ner";
+import { scanSecrets } from "./secrets";
 
 const log = createLogger("Sensitive");
 
 const SEVERITY_RANK = { high: 3, medium: 2, low: 1 } as const;
+
+/** Shortest value we bother redacting — below this, literal replacement would hit
+ *  too many innocent substrings elsewhere in the text. */
+const MIN_REDACT_LEN = 3;
 
 /** One string to scan, tagged with where it came from and when. */
 interface ScanField {
   text: string;
   source: SensitiveSource;
   atMs: number | null;
+}
+
+/** The outcome of a scan: a redacted report for the UI plus the raw matched values
+ *  (main-process only — used to build the redactor; never sent to the renderer). */
+export interface ScanResult {
+  report: SensitiveReport;
+  /** De-duplicated raw values detected across the session. */
+  values: string[];
+}
+
+export interface ScanOptions {
+  /** When provided (Advanced protection on + model ready), also run NER. */
+  nerPipeline?: NerPipeline | null;
 }
 
 function str(v: unknown): string | undefined {
@@ -73,7 +94,7 @@ function fieldsFromEvent(ev: RecEvent, startedAt: number | null): ScanField[] {
   return picked.filter((f): f is ScanField => f !== null);
 }
 
-/** Every scannable field of a recording, in timeline order. */
+/** Every scannable text field of a recording, in timeline order. */
 function collectFields(dir: string): ScanField[] {
   const fields: ScanField[] = [];
 
@@ -105,6 +126,19 @@ function collectFields(dir: string): ScanField[] {
   return fields;
 }
 
+/** Run every detection layer over one string and merge them (overlaps resolved). */
+async function matchesFor(
+  text: string,
+  nerPipeline: NerPipeline | null,
+): Promise<SensitiveMatch[]> {
+  const [secrets, ner] = await Promise.all([
+    scanSecrets(text),
+    nerPipeline ? runNer(text, nerPipeline) : Promise.resolve<SensitiveMatch[]>([]),
+  ]);
+  const pii = scanStructuredPii(text);
+  return resolveOverlaps([...secrets, ...pii, ...ner]);
+}
+
 /** Stable identity for deduping the same value seen in the same kind of place. */
 function findingKey(source: SensitiveSource, match: SensitiveMatch): string {
   return `${source}|${match.category}|${match.value}`;
@@ -113,31 +147,45 @@ function findingKey(source: SensitiveSource, match: SensitiveMatch): string {
 /**
  * Scan one recording for potentially sensitive details in exactly the text that
  * Analyze would send to GitHub Copilot — window/document titles, URLs, clipboard
- * previews, terminal commands, markers, and transcribed voice narration. Runs
- * entirely on this computer and returns a redacted {@link SensitiveReport}: it
- * never emits or persists the raw matched values, only masked forms and short
- * redacted context. Best-effort and non-throwing — an unreadable artifact simply
- * contributes no fields.
+ * previews, terminal commands, markers, and transcribed voice narration. Runs the
+ * always-on secret + structured-PII layers and, when a NER pipeline is supplied
+ * (Advanced protection on and the model ready), the named-entity layer too.
  *
- * Note: this inspects text only. Secrets that are merely *visible* in captured
- * screen frames are out of scope and are not detected here.
+ * Runs entirely on this computer and is best-effort / non-throwing — an unreadable
+ * artifact simply contributes no fields. Returns a redacted {@link SensitiveReport}
+ * (masked values + short redacted context only) plus the raw matched `values` for
+ * the caller's redactor. The report NEVER carries raw values; the `values` array
+ * stays in the main process and is never persisted or sent to the renderer.
+ *
+ * Note: this inspects text only. Secrets merely *visible* in screen frames are
+ * handled separately by the frame OCR + blur seam in the describer's get_frames.
  */
-export function scanSessionForSensitive(sessionId: string): SensitiveReport {
+export async function scanSession(
+  sessionId: string,
+  options: ScanOptions = {},
+): Promise<ScanResult> {
   const dir = sessionDir(sessionId); // throws on an unsafe id (traversal guard)
   const fields = collectFields(dir);
+  const nerPipeline = options.nerPipeline ?? null;
 
   const byKey = new Map<string, SensitiveFinding>();
+  const values = new Set<string>();
   for (const field of fields) {
-    for (const match of scanText(field.text)) {
+    let matches: SensitiveMatch[];
+    try {
+      matches = await matchesFor(field.text, nerPipeline);
+    } catch (err) {
+      log.warn("field scan failed:", err instanceof Error ? err.message : err);
+      continue;
+    }
+    for (const match of matches) {
+      if (match.value.length >= MIN_REDACT_LEN) values.add(match.value);
       const key = findingKey(field.source, match);
       const existing = byKey.get(key);
       if (existing) {
         existing.occurrences += 1;
         // Keep the earliest known time so the finding points at first exposure.
-        if (
-          field.atMs != null &&
-          (existing.atMs == null || field.atMs < existing.atMs)
-        ) {
+        if (field.atMs != null && (existing.atMs == null || field.atMs < existing.atMs)) {
           existing.atMs = field.atMs;
         }
         continue;
@@ -166,12 +214,33 @@ export function scanSessionForSensitive(sessionId: string): SensitiveReport {
   const counts: SensitiveReport["counts"] = {};
   for (const f of findings) counts[f.category] = (counts[f.category] ?? 0) + 1;
 
-  return {
+  const report: SensitiveReport = {
     sessionId,
     scannedAt: Date.now(),
     totalFindings: findings.length,
     highSeverityCount: findings.filter((f) => f.severity === "high").length,
     counts,
     findings,
+  };
+  return { report, values: [...values] };
+}
+
+/**
+ * Build a redactor that replaces every detected raw value with its mask. Literal,
+ * longest-first replacement so a value contained in another (e.g. a token inside a
+ * URL) is masked as the longer match first. Values shorter than MIN_REDACT_LEN are
+ * ignored to avoid masking innocent substrings.
+ */
+export function buildRedactor(values: string[]): (text: string) => string {
+  const unique = [...new Set(values.filter((v) => v.length >= MIN_REDACT_LEN))].sort(
+    (a, b) => b.length - a.length,
+  );
+  if (unique.length === 0) return (text) => text;
+  return (text) => {
+    let out = text;
+    for (const value of unique) {
+      if (out.includes(value)) out = out.split(value).join(maskValue(value));
+    }
+    return out;
   };
 }

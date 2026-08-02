@@ -40,7 +40,8 @@ export type SensitiveSource =
   | "command"
   | "clipboard"
   | "note"
-  | "narration";
+  | "narration"
+  | "frame";
 
 /** One raw detector hit inside a single string. Carries the matched value in
  *  memory only; never persist or display it directly — mask it first. */
@@ -84,7 +85,9 @@ const STRUCTURED_PII: DetectorSpec[] = [
     label: "Payment card number",
     severity: "high",
     rank: 55,
-    pattern: /\b(?:\d[ -]?){13,19}\b/g,
+    // 13–19 digits with optional single space/dash separators, anchored to a digit
+    // at both ends so a trailing separator is never captured into the value.
+    pattern: /\b\d(?:[ -]?\d){12,18}\b/g,
     accept: (value) => {
       const digits = value.replace(/[ -]/g, "");
       return digits.length >= 13 && digits.length <= 19 && luhnValid(digits);
@@ -307,6 +310,8 @@ export function sourceLabel(source: SensitiveSource): string {
       return "Note";
     case "narration":
       return "Voice narration";
+    case "frame":
+      return "On-screen text";
   }
 }
 

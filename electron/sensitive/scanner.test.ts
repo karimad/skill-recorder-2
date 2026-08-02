@@ -4,16 +4,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { scanSessionForSensitive } from "./scanner";
+import type { NerEntity, NerPipeline } from "./ner-model";
+import { buildRedactor, scanSession } from "./scanner";
 
 const STARTED_AT = 10_000;
 
-// Fake, non-real credentials shaped to trip specific detectors.
-const GH_TOKEN = "ghp_" + "a".repeat(36);
-const URL_CREDS = "svc:hunter2pass";
-const ASSIGN_VALUE = "ABCD1234EFGH5678IJKL";
+// Fake, non-real values shaped to trip specific detectors.
+const GH_TOKEN = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"; // 36 body chars
 const CARD = "4111 1111 1111 1111"; // Luhn-valid Visa test number
 const EMAIL = "dev@internal.example.com";
+const PERSON = "Ada Lovelace";
 
 function event(seq: number, offsetMs: number, type: string, payload: Record<string, unknown>) {
   return JSON.stringify({
@@ -36,18 +36,12 @@ async function seedSession(root: string, id: string): Promise<void> {
   );
 
   const lines = [
-    event(1, 1_000, "app.activate", {
-      app: "Chrome",
-      title: "Internal Dashboard",
-      url: `https://${URL_CREDS}@db.internal.example.com/health`,
-    }),
-    event(2, 1_500, "clipboard.change", { textPreview: `card ${CARD} for the test account` }),
-    event(3, 2_000, "terminal.command", { command: `export API_KEY=${ASSIGN_VALUE} && deploy` }),
-    event(4, 3_000, "terminal.command", { command: `echo ${GH_TOKEN}` }),
-    event(5, 2_500, "marker", { note: `ping ${EMAIL} about this` }),
-    event(6, 4_000, "app.title-change", { app: "Chrome", title: "Nothing sensitive here" }),
+    event(1, 1_500, "clipboard.change", { textPreview: `card ${CARD} for the test account` }),
+    event(2, 3_000, "terminal.command", { command: `echo ${GH_TOKEN}` }),
+    event(3, 2_500, "marker", { note: `met with ${PERSON} to review; ping ${EMAIL}` }),
+    event(4, 4_000, "app.title-change", { app: "Chrome", title: "Nothing sensitive here" }),
     // Same GitHub token again, later — should dedupe into one finding (occurrences: 2).
-    event(7, 5_000, "terminal.command", { command: `echo ${GH_TOKEN}` }),
+    event(5, 5_000, "terminal.command", { command: `echo ${GH_TOKEN}` }),
   ];
   await writeFile(path.join(dir, "events.jsonl"), lines.join("\n") + "\n");
 
@@ -64,66 +58,98 @@ async function seedSession(root: string, id: string): Promise<void> {
   );
 }
 
-test("scanner finds sensitive details across every outgoing source and redacts them", async () => {
+/** A deterministic NER stub: flags PERSON wherever it appears, no weights/native deps. */
+const personPipeline: NerPipeline = (async (text: string): Promise<NerEntity[]> => {
+  const idx = text.indexOf(PERSON);
+  if (idx < 0) return [];
+  return [{ entity_group: "PER", word: PERSON, start: idx, end: idx + PERSON.length, score: 0.99 }];
+}) as unknown as NerPipeline;
+
+async function withSessionRoot(fn: (root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sensitive-"));
   const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
   process.env.SKILL_RECORDER_SESSIONS_DIR = root;
-
   try {
+    await fn(root);
+  } finally {
+    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
+    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("scanSession detects secrets + structured PII across sources and returns raw values", async () => {
+  await withSessionRoot(async (root) => {
     const id = "scan-test";
     await seedSession(root, id);
 
-    const report = scanSessionForSensitive(id);
+    const { report, values } = await scanSession(id);
 
     assert.equal(report.sessionId, id);
-    assert.equal(report.totalFindings, 6);
-    assert.equal(report.highSeverityCount, 4); // 2 passwords + gh token + card
-    assert.deepEqual(report.counts, {
-      password: 2,
-      "api-key": 1,
-      "credit-card": 1,
-      email: 2,
-    });
 
-    const bySource = (src: string) => report.findings.filter((f) => f.source === src);
-    assert.equal(bySource("url").length, 1);
-    assert.equal(bySource("command").length, 2);
-    assert.equal(bySource("clipboard").length, 1);
-    assert.equal(bySource("note").length, 1);
-    assert.equal(bySource("narration").length, 1);
-
-    // Same token in two commands collapses to one finding seen twice, timed at
-    // the earliest occurrence (offset 3_000, not the later 5_000).
+    // Secretlint finds the GitHub token; the two commands collapse to one finding
+    // seen twice, timed at the earliest occurrence (3_000, not 5_000).
     const token = report.findings.find((f) => f.label === "GitHub token");
     assert.ok(token, "expected a GitHub token finding");
     assert.equal(token.occurrences, 2);
     assert.equal(token.atMs, 3_000);
     assert.equal(token.severity, "high");
 
+    // Structured PII (deterministic, in-repo).
+    assert.ok(report.findings.some((f) => f.category === "credit-card"), "expected a card finding");
+    assert.ok(report.findings.some((f) => f.category === "email"), "expected an email finding");
+
     // Findings sort high-severity first.
     assert.equal(report.findings[0].severity, "high");
 
-    // Nothing raw ever leaves the scanner — only masked values + redacted context.
+    // Raw values are returned to the main process (for the redactor) but never in
+    // the report itself.
+    assert.ok(values.includes(GH_TOKEN));
+    assert.ok(values.includes(CARD));
+    assert.ok(values.includes(EMAIL));
+
     const serialized = JSON.stringify(report);
-    for (const raw of [GH_TOKEN, URL_CREDS, ASSIGN_VALUE, CARD, EMAIL, "hunter2pass"]) {
+    for (const raw of [GH_TOKEN, CARD, EMAIL]) {
       assert.ok(!serialized.includes(raw), `report must not contain raw value: ${raw}`);
     }
     for (const f of report.findings) {
       assert.match(f.redactedValue, /•/, "redacted value should be masked");
     }
-  } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
-    await rm(root, { recursive: true, force: true });
-  }
+  });
 });
 
-test("scanner returns a clean report when nothing sensitive is present", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sensitive-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
+test("scanSession applies the injected NER pipeline (Advanced protection)", async () => {
+  await withSessionRoot(async (root) => {
+    const id = "ner-test";
+    await seedSession(root, id);
 
-  try {
+    const withoutNer = await scanSession(id);
+    assert.ok(!withoutNer.report.findings.some((f) => f.category === "person"));
+    assert.ok(!withoutNer.values.includes(PERSON));
+
+    const withNer = await scanSession(id, { nerPipeline: personPipeline });
+    const person = withNer.report.findings.find((f) => f.category === "person");
+    assert.ok(person, "expected a person finding when NER is enabled");
+    assert.equal(person.label, "Person name");
+    assert.ok(withNer.values.includes(PERSON));
+  });
+});
+
+test("buildRedactor masks every detected value, longest first, and is a no-op when empty", async () => {
+  const redact = buildRedactor([GH_TOKEN, EMAIL, "ab"]); // "ab" below MIN_REDACT_LEN, ignored
+  const text = `token ${GH_TOKEN} mail ${EMAIL} ab`;
+  const out = redact(text);
+  assert.ok(!out.includes(GH_TOKEN));
+  assert.ok(!out.includes(EMAIL));
+  assert.ok(out.includes("••••"));
+  assert.ok(out.includes(" ab")); // short value left untouched
+
+  const noop = buildRedactor([]);
+  assert.equal(noop("nothing to redact here"), "nothing to redact here");
+});
+
+test("scanSession returns a clean result when nothing sensitive is present", async () => {
+  await withSessionRoot(async (root) => {
     const id = "clean-test";
     const dir = path.join(root, id);
     await mkdir(dir, { recursive: true });
@@ -136,32 +162,20 @@ test("scanner returns a clean report when nothing sensitive is present", async (
       event(1, 500, "marker", { note: "reviewed the onboarding docs" }) + "\n",
     );
 
-    const report = scanSessionForSensitive(id);
+    const { report, values } = await scanSession(id);
     assert.equal(report.totalFindings, 0);
-    assert.equal(report.highSeverityCount, 0);
-    assert.deepEqual(report.counts, {});
     assert.deepEqual(report.findings, []);
-  } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
-    await rm(root, { recursive: true, force: true });
-  }
+    assert.deepEqual(values, []);
+  });
 });
 
-test("scanner is defensive: missing artifacts yield an empty report, not a throw", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "skill-recorder-sensitive-"));
-  const previousRoot = process.env.SKILL_RECORDER_SESSIONS_DIR;
-  process.env.SKILL_RECORDER_SESSIONS_DIR = root;
-
-  try {
+test("scanSession is defensive: missing artifacts yield an empty result, not a throw", async () => {
+  await withSessionRoot(async (root) => {
     const id = "empty-test";
     await mkdir(path.join(root, id), { recursive: true });
-    const report = scanSessionForSensitive(id);
+    const { report, values } = await scanSession(id);
     assert.equal(report.totalFindings, 0);
     assert.deepEqual(report.findings, []);
-  } finally {
-    if (previousRoot === undefined) delete process.env.SKILL_RECORDER_SESSIONS_DIR;
-    else process.env.SKILL_RECORDER_SESSIONS_DIR = previousRoot;
-    await rm(root, { recursive: true, force: true });
-  }
+    assert.deepEqual(values, []);
+  });
 });

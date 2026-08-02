@@ -24,6 +24,9 @@ const IPC = {
   narrationDownload: "narration:download",
   narrationTranscribe: "narration:transcribe",
   narrationStatusChanged: "narration:status-changed",
+  sensitiveModelStatus: "sensitive:status",
+  sensitiveSetAdvanced: "sensitive:set-advanced",
+  sensitiveStatusChanged: "sensitive:status-changed",
   analyze: "analyze:start",
   analyzeFeedback: "analyze:feedback",
   getAnalysis: "analyze:get",
@@ -103,7 +106,14 @@ contextBridge.exposeInMainWorld("skillRecorder", {
     ipcRenderer.on(IPC.narrationStatusChanged, listener);
     return () => ipcRenderer.removeListener(IPC.narrationStatusChanged, listener);
   },
-  analyze: (sessionId, options) => ipcRenderer.invoke(IPC.analyze, sessionId, options),
+  sensitiveModelStatus: () => ipcRenderer.invoke(IPC.sensitiveModelStatus),
+  setAdvancedProtection: (enabled) => ipcRenderer.invoke(IPC.sensitiveSetAdvanced, enabled),
+  onSensitiveModelStatusChanged: (cb) => {
+    const listener = (_event, status) => cb(status);
+    ipcRenderer.on(IPC.sensitiveStatusChanged, listener);
+    return () => ipcRenderer.removeListener(IPC.sensitiveStatusChanged, listener);
+  },
+  analyze: (sessionId) => ipcRenderer.invoke(IPC.analyze, sessionId),
   analyzeFeedback: (input) => ipcRenderer.invoke(IPC.analyzeFeedback, input),
   getAnalysis: (sessionId) => ipcRenderer.invoke(IPC.getAnalysis, sessionId),
   updateAnalysis: (input) => ipcRenderer.invoke(IPC.updateAnalysis, input),

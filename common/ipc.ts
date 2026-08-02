@@ -110,22 +110,40 @@ export interface AnalyzeResult {
   analysis?: Analysis;
   error?: string;
   /**
-   * Present when an on-device pre-send scan found potentially sensitive details
-   * in the text that would be sent to GitHub Copilot. When set on a failed
-   * result (`ok:false`), the analysis was **held back** and nothing was sent —
-   * the renderer should let the user review and either cancel or re-invoke with
-   * `acknowledgeSensitive: true`.
+   * Present when the on-device pre-send scan redacted potentially sensitive
+   * details from the text before it was sent to GitHub Copilot. This is purely
+   * informational — the analysis still ran and `ok` is unaffected. The report
+   * carries only masked values + short redacted context, never raw values, so the
+   * renderer can show a non-blocking "Redacted N details" summary.
    */
   review?: SensitiveReport;
 }
 
-/** Options for an analyze round. */
-export interface AnalyzeOptions {
-  /**
-   * Proceed even though the on-device pre-send scan flagged sensitive details.
-   * Set once the user has reviewed the findings and chosen "Analyze anyway".
-   */
-  acknowledgeSensitive?: boolean;
+/** The two on-device model assets behind the opt-in "Advanced protection". */
+export type SensitiveModelState = "missing" | "downloading" | "ready" | "error";
+
+/**
+ * Status of the opt-in "Advanced protection" layer (local NER + frame OCR). The
+ * persisted `enabled` opt-in is independent of whether the model files are
+ * downloaded: a user can turn it off while keeping the cache, or have it on while
+ * a download is still in flight (in which case scans run the always-on layers and
+ * the advanced ones join once ready).
+ */
+export interface SensitiveModelStatus {
+  /** Persisted user opt-in. */
+  enabled: boolean;
+  /** Local named-entity model (Xenova/bert-base-NER) weights. */
+  ner: SensitiveModelState;
+  /** Tesseract OCR language data (for frame text detection). */
+  ocr: SensitiveModelState;
+  /** Aggregate download progress 0–100 while either asset is downloading. */
+  progress: number | null;
+  error: string | null;
+}
+
+export interface SensitiveModelActionResult {
+  ok: boolean;
+  error?: string;
 }
 
 /** Feedback payload sent from the renderer for a re-analysis round. */
@@ -396,6 +414,9 @@ export const IPC = {
   narrationDownload: "narration:download",
   narrationTranscribe: "narration:transcribe",
   narrationStatusChanged: "narration:status-changed",
+  sensitiveModelStatus: "sensitive:status",
+  sensitiveSetAdvanced: "sensitive:set-advanced",
+  sensitiveStatusChanged: "sensitive:status-changed",
   analyze: "analyze:start",
   analyzeFeedback: "analyze:feedback",
   getAnalysis: "analyze:get",
@@ -453,11 +474,17 @@ export interface SkillRecorderApi {
   downloadNarrationModel(): Promise<NarrationActionResult>;
   transcribeNarration(sessionId: string): Promise<NarrationActionResult>;
   onNarrationStatusChanged(cb: (status: NarrationStatus) => void): () => void;
+  /** Current status of the opt-in "Advanced protection" models (NER + frame OCR). */
+  sensitiveModelStatus(): Promise<SensitiveModelStatus>;
+  /** Toggle "Advanced protection". Enabling downloads the models on first use and
+   *  persists the opt-in; disabling stops applying them but keeps the cache. */
+  setAdvancedProtection(enabled: boolean): Promise<SensitiveModelActionResult>;
+  onSensitiveModelStatusChanged(cb: (status: SensitiveModelStatus) => void): () => void;
   /** Run the Copilot describer on a session (defaults to the last completed one).
-   *  Runs an on-device sensitive-detail scan first; if it flags anything and the
-   *  caller hasn't set `acknowledgeSensitive`, resolves with `{ ok:false, review }`
-   *  and sends nothing. */
-  analyze(sessionId?: string, options?: AnalyzeOptions): Promise<AnalyzeResult>;
+   *  Runs an on-device sensitive-detail scan first and redacts any flagged values
+   *  from the text before it is sent — non-blocking; the analysis always proceeds
+   *  and any redaction is reported back in `review`. */
+  analyze(sessionId?: string): Promise<AnalyzeResult>;
   /** Send NL feedback and re-analyze in the same multi-turn session. */
   analyzeFeedback(input: AnalysisFeedbackInput): Promise<AnalyzeResult>;
   /** Load the persisted analysis for a session, if any. */

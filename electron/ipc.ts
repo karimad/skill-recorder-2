@@ -12,7 +12,6 @@ import path from "node:path";
 import type {
   AnalysisEditInput,
   AnalysisFeedbackInput,
-  AnalyzeOptions,
   AnalyzeResult,
   AutomationBuildInput,
   AutomationCreateResult,
@@ -33,13 +32,20 @@ import { AutomationBuilder, loadPersistedAutomation } from "./automationbuilder/
 import { openCopilotSignIn } from "./copilot-signin";
 import { buildDebugInfo, writeDebugBundle } from "./debug-bundle";
 import { Describer, loadPersistedAnalysis } from "./describer/describer";
+import type { RedactionContext } from "./describer/tools";
 import { runDoctor } from "./doctor";
 import { createLogger } from "./logger";
 import type { AudioRecorder } from "./audio/recorder";
 import type { NarrationManager } from "./narration/manager";
 import type { RecorderController } from "./recorder/controller";
 import { isValidSessionId } from "./recorder/session-store";
-import { scanSessionForSensitive } from "./sensitive/scanner";
+import {
+  INACTIVE_FRAME_REDACTOR,
+  OcrFrameRedactor,
+  type FrameRedactor,
+} from "./sensitive/frame-redact";
+import type { SensitiveModelManager } from "./sensitive/model-manager";
+import { buildRedactor, scanSession } from "./sensitive/scanner";
 import { deleteSession, listSessions } from "./sessions";
 import { loadPersistedSkill, SkillBuilder, type SkillTarget } from "./skillbuilder/builder";
 
@@ -53,6 +59,7 @@ export function registerIpc(
   automationBuilder: AutomationBuilder,
   narration: NarrationManager,
   microphones: AudioRecorder,
+  sensitiveModels: SensitiveModelManager,
 ): void {
   ipcMain.handle(IPC.stop, () => recorder.stop());
   ipcMain.handle(IPC.discard, () => recorder.discard());
@@ -131,9 +138,43 @@ export function registerIpc(
     return dir ? path.basename(dir) : null;
   };
 
+  ipcMain.handle(IPC.sensitiveModelStatus, () => sensitiveModels.status());
+  ipcMain.handle(IPC.sensitiveSetAdvanced, (_event, enabled: boolean) => {
+    if (typeof enabled !== "boolean") return { ok: false, error: "Invalid preference." };
+    return sensitiveModels.setAdvanced(enabled);
+  });
+
+  /**
+   * Run the on-device pre-send scan and build the redaction context threaded into
+   * the describer. Always-on layers (secretlint + structured PII) run every time;
+   * the NER + frame-OCR layers only when Advanced protection is enabled and ready.
+   * Non-blocking: a scan failure returns an inert redactor so analysis still runs.
+   */
+  const buildRedaction = async (
+    sessionId: string,
+  ): Promise<{ redaction: RedactionContext; review?: AnalyzeResult["review"] }> => {
+    try {
+      const nerPipeline = await sensitiveModels.getNerPipeline();
+      const { report, values } = await scanSession(sessionId, { nerPipeline });
+      const redactText = buildRedactor(values);
+      const frameRedactor: FrameRedactor = sensitiveModels.isAdvancedEnabled()
+        ? new OcrFrameRedactor({ ocr: sensitiveModels.getOcr(), knownValues: values, nerPipeline })
+        : INACTIVE_FRAME_REDACTOR;
+      return {
+        redaction: { redactText, frameRedactor },
+        review: report.totalFindings > 0 ? report : undefined,
+      };
+    } catch (err) {
+      log.warn("sensitive scan failed; proceeding without redaction:", err instanceof Error ? err.message : err);
+      return {
+        redaction: { redactText: (t) => t, frameRedactor: INACTIVE_FRAME_REDACTOR },
+      };
+    }
+  };
+
   ipcMain.handle(
     IPC.analyze,
-    async (_event, sessionId?: string, options?: AnalyzeOptions): Promise<AnalyzeResult> => {
+    async (_event, sessionId?: string): Promise<AnalyzeResult> => {
       const id = resolveSessionId(sessionId);
       if (!id) return { ok: false, error: "No completed session to analyze yet." };
       if (!isValidSessionId(id)) return { ok: false, error: "Unknown session." };
@@ -142,22 +183,14 @@ export function registerIpc(
       // failure here falls through to analyzing without voice (the error is surfaced
       // via the narration status affordance and the audio stays saved).
       await narration.ensureTranscribedForAnalysis(id);
-      // On-device pre-send gate: scan exactly the text that would go to GitHub
-      // Copilot for secrets/credentials/PII. If anything is flagged and the user
-      // hasn't acknowledged it, hold the analysis and return the (redacted) review
-      // for confirmation — nothing leaves the machine. Best-effort: a scan failure
-      // must never block a legitimate analysis.
-      if (!options?.acknowledgeSensitive) {
-        try {
-          const review = scanSessionForSensitive(id);
-          if (review.totalFindings > 0) return { ok: false, review };
-        } catch (err) {
-          log.warn("sensitive scan failed; proceeding:", err instanceof Error ? err.message : err);
-        }
-      }
+      // On-device pre-send redaction (non-blocking): mask secrets/credentials/PII in
+      // every outgoing text field — and, under Advanced protection, blur on-screen
+      // text in frames — before anything reaches GitHub Copilot. Analysis always
+      // proceeds; the (raw-value-free) report is returned purely for a UI summary.
+      const { redaction, review } = await buildRedaction(id);
       try {
-        const analysis = await describer.analyze(id);
-        return { ok: true, analysis };
+        const analysis = await describer.analyze(id, redaction);
+        return { ok: true, analysis, review };
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         log.warn("analyze failed:", error);
@@ -170,12 +203,15 @@ export function registerIpc(
     IPC.analyzeFeedback,
     async (_event, input: AnalysisFeedbackInput): Promise<AnalyzeResult> => {
       if (!isValidSessionId(input?.sessionId)) return { ok: false, error: "Unknown session." };
+      // Re-scan + rebind the redactor so the feedback round stays masked too.
+      const { redaction, review } = await buildRedaction(input.sessionId);
       try {
-        const analysis = await describer.feedback(input.sessionId, {
-          overall: input.overall,
-          steps: input.steps ?? [],
-        });
-        return { ok: true, analysis };
+        const analysis = await describer.feedback(
+          input.sessionId,
+          { overall: input.overall, steps: input.steps ?? [] },
+          redaction,
+        );
+        return { ok: true, analysis, review };
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         log.warn("feedback failed:", error);

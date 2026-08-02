@@ -1881,8 +1881,8 @@ button:focus-visible,
   flex-direction: column;
   gap: 14px;
   max-width: 640px;
-  border: 1px solid rgba(var(--rec-rgb), 0.45);
-  background: rgba(var(--rec-rgb), 0.06);
+  border: 1px solid rgba(var(--go-rgb), 0.4);
+  background: rgba(var(--go-rgb), 0.06);
   border-radius: 12px;
   padding: 16px 16px 14px;
   color: var(--text);
@@ -1894,16 +1894,27 @@ button:focus-visible,
   align-items: flex-start;
 }
 
+.sensitive-review-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
 .sensitive-review-icon {
   flex: none;
   font-size: 18px;
   line-height: 1.2;
-  color: var(--rec);
+  color: var(--go);
 }
 
 .sensitive-review-head strong {
   font-size: 14px;
-  color: var(--brand-ink);
+  color: var(--text);
+}
+
+.sensitive-dismiss {
+  flex: none;
+  align-self: flex-start;
+  font-size: 12px;
 }
 
 .sensitive-review-sub {
@@ -2001,11 +2012,98 @@ button:focus-visible,
   color: var(--muted);
 }
 
-.sensitive-actions {
+/* --- Advanced protection toggle (sidebar footer) ------------------------- */
+.adv-protect {
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 12px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--deck);
+}
+
+.adv-protect-row {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.adv-protect-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.adv-protect-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.adv-protect-state {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.adv-protect-state.tone-on {
+  color: var(--go);
+}
+
+.adv-protect-state.tone-busy {
+  color: var(--brand-ink);
+}
+
+.adv-protect-state.tone-error {
+  color: var(--rec);
+}
+
+.adv-protect-note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.adv-switch {
+  flex: none;
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  padding: 0;
+}
+
+.adv-switch:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.adv-switch.on {
+  background: var(--go);
+  border-color: var(--go);
+}
+
+.adv-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease;
+}
+
+.adv-switch.on .adv-switch-knob {
+  transform: translateX(16px);
 }
 
 .record-cta.danger {
