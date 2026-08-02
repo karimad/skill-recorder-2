@@ -259,6 +259,30 @@ value survives (clean cases must yield zero findings). A frame case runs the rea
 The summary reports aggregate **recall** (sensitive detail masked/blurred) and
 **precision** (ordinary content kept).
 
+### Opt-in real-image OCR eval (`ocr-images.ts`)
+
+The deterministic frame eval above feeds *synthetic* OCR words, so it can't catch
+the real leak vector: Tesseract **misreading** on-screen text badly enough that a
+value is never detected (and the frame ships unblurred). This separate, **non-hermetic**
+harness closes that gap end-to-end — it renders text to actual JPEGs with `sharp`,
+runs the **real `Ocr` engine** + the shared detectors via `sensitiveFrameBoxes`, and
+checks each sensitive line gets a blur box while clean lines are left alone.
+
+```bash
+npm run eval:sensitive:ocr             # eng + a multilingual (jpn) case
+npm run eval:sensitive:ocr -- --keep   # also print each case's recognized OCR text
+```
+
+It is **not** part of `eval:sensitive`: it needs the tesseract WASM core, `sharp`
+with system fonts, and a one-time `tessdata_fast` download per language (cached in
+the git-ignored `evals/.cache/tessdata/`). When the environment can't support it
+(no fonts / no network / OCR can't read a probe image) it **self-skips with exit 0**
+rather than failing. Scoring is layout-based and OCR-jitter tolerant: each line is
+rendered in its own fixed-height band, recall = "a blur box lands on a sensitive
+line", precision = "no box lands on a clean line". Cases cover a GitHub token, a
+credit card + email, a known-value cross-feed, and a Latin email amid Japanese text
+(exercising the `jpn`+`eng` traineddata path the language picker downloads).
+
 ## Mock pages (`evals/mocks/`)
 
 Static, self-contained HTML fixtures matching the scenarios (`pricing.html`,

@@ -26,6 +26,7 @@ const IPC = {
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
   sensitiveSetAdvanced: "sensitive:set-advanced",
+  sensitiveSetOcrLanguages: "sensitive:set-ocr-languages",
   sensitiveStatusChanged: "sensitive:status-changed",
   analyze: "analyze:start",
   analyzeFeedback: "analyze:feedback",
@@ -108,6 +109,7 @@ contextBridge.exposeInMainWorld("skillRecorder", {
   },
   sensitiveModelStatus: () => ipcRenderer.invoke(IPC.sensitiveModelStatus),
   setAdvancedProtection: (enabled) => ipcRenderer.invoke(IPC.sensitiveSetAdvanced, enabled),
+  setOcrLanguages: (codes) => ipcRenderer.invoke(IPC.sensitiveSetOcrLanguages, codes),
   onSensitiveModelStatusChanged: (cb) => {
     const listener = (_event, status) => cb(status);
     ipcRenderer.on(IPC.sensitiveStatusChanged, listener);

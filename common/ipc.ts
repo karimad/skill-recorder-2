@@ -136,6 +136,8 @@ export interface SensitiveModelStatus {
   ner: SensitiveModelState;
   /** Tesseract OCR language data (for frame text detection). */
   ocr: SensitiveModelState;
+  /** The selected OCR language codes (tessdata_fast, e.g. `["eng","spa"]`). */
+  languages: string[];
   /** Aggregate download progress 0–100 while either asset is downloading. */
   progress: number | null;
   error: string | null;
@@ -416,6 +418,7 @@ export const IPC = {
   narrationStatusChanged: "narration:status-changed",
   sensitiveModelStatus: "sensitive:status",
   sensitiveSetAdvanced: "sensitive:set-advanced",
+  sensitiveSetOcrLanguages: "sensitive:set-ocr-languages",
   sensitiveStatusChanged: "sensitive:status-changed",
   analyze: "analyze:start",
   analyzeFeedback: "analyze:feedback",
@@ -479,6 +482,10 @@ export interface SkillRecorderApi {
   /** Toggle "Advanced protection". Enabling downloads the models on first use and
    *  persists the opt-in; disabling stops applying them but keeps the cache. */
   setAdvancedProtection(enabled: boolean): Promise<SensitiveModelActionResult>;
+  /** Choose which languages OCR recognizes on screen frames (tessdata_fast codes).
+   *  Persists the selection; when Advanced is on, downloads any newly-required
+   *  language data and rebuilds the OCR engine. */
+  setOcrLanguages(codes: string[]): Promise<SensitiveModelActionResult>;
   onSensitiveModelStatusChanged(cb: (status: SensitiveModelStatus) => void): () => void;
   /** Run the Copilot describer on a session (defaults to the last completed one).
    *  Runs an on-device sensitive-detail scan first and redacts any flagged values

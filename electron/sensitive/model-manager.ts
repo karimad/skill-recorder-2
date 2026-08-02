@@ -14,13 +14,18 @@ import {
   type ModelLoadProgress,
   type NerPipeline,
 } from "./ner-model";
-import { Ocr, TESSDATA_FILE } from "./ocr";
+import { Ocr, tessdataFileName } from "./ocr";
+import {
+  DEFAULT_OCR_LANGUAGE,
+  normalizeOcrLanguages,
+} from "../../common/ocr-languages";
 
 const log = createLogger("Sensitive/models");
 
-/** Apache-2.0 fast LSTM English model (~4 MB). Fetched once into the models dir. */
-const TESSDATA_URL =
-  "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata";
+/** Apache-2.0 fast LSTM models (a few MB each). Fetched once into the models dir. */
+function tessdataUrl(code: string): string {
+  return `https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/${tessdataFileName(code)}`;
+}
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -36,39 +41,64 @@ function tessdataDir(): string {
   return path.join(modelsCacheDir(), "tessdata");
 }
 
-function isTessdataCached(): boolean {
-  return existsSync(path.join(tessdataDir(), TESSDATA_FILE));
+function isTessdataCached(code: string): boolean {
+  return existsSync(path.join(tessdataDir(), tessdataFileName(code)));
 }
 
-function readEnabledFlag(): boolean {
+/** The selected languages whose data is not yet on disk. */
+function missingTessdata(codes: readonly string[]): string[] {
+  return codes.filter((code) => !isTessdataCached(code));
+}
+
+/** OCR is ready to build only when every selected language's data is present. */
+function allTessdataCached(codes: readonly string[]): boolean {
+  return codes.length > 0 && codes.every(isTessdataCached);
+}
+
+interface AdvancedSettings {
+  enabled: boolean;
+  languages: string[];
+}
+
+function readSettings(defaultLanguages: string[]): AdvancedSettings {
   try {
-    const raw = JSON.parse(readFileSync(settingsFile(), "utf8")) as { enabled?: unknown };
-    return raw.enabled === true;
+    const raw = JSON.parse(readFileSync(settingsFile(), "utf8")) as {
+      enabled?: unknown;
+      languages?: unknown;
+    };
+    const langs = Array.isArray(raw.languages)
+      ? normalizeOcrLanguages(raw.languages.filter((l): l is string => typeof l === "string"))
+      : defaultLanguages;
+    return { enabled: raw.enabled === true, languages: langs };
   } catch {
-    return false;
+    return { enabled: false, languages: defaultLanguages };
   }
 }
 
-async function writeEnabledFlag(enabled: boolean): Promise<void> {
+async function writeSettings(settings: AdvancedSettings): Promise<void> {
   const file = settingsFile();
   await mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}.${Date.now()}`;
   try {
-    await writeFile(tmp, JSON.stringify({ enabled }, null, 2));
+    await writeFile(tmp, JSON.stringify(settings, null, 2));
     await rename(tmp, file);
   } finally {
     await rm(tmp, { force: true });
   }
 }
 
-/** Download the Tesseract language data to the models dir (atomic temp+rename). */
-async function downloadTessdata(onProgress?: (percent: number) => void): Promise<void> {
+/** Download one Tesseract language's data to the models dir (atomic temp+rename). */
+async function downloadTessdata(
+  code: string,
+  onProgress?: (percent: number) => void,
+): Promise<void> {
   const dir = tessdataDir();
   await mkdir(dir, { recursive: true });
-  const dest = path.join(dir, TESSDATA_FILE);
+  const dest = path.join(dir, tessdataFileName(code));
   const tmp = `${dest}.tmp.${process.pid}.${Date.now()}`;
-  const res = await fetch(TESSDATA_URL);
-  if (!res.ok || !res.body) throw new Error(`Could not download OCR language data (${res.status}).`);
+  const res = await fetch(tessdataUrl(code));
+  if (!res.ok || !res.body)
+    throw new Error(`Could not download OCR language data for "${code}" (${res.status}).`);
   const total = Number(res.headers.get("content-length")) || 0;
   let loaded = 0;
   const chunks: Buffer[] = [];
@@ -99,32 +129,49 @@ export class SensitiveModelManager {
     enabled: false,
     ner: "missing",
     ocr: "missing",
+    languages: [DEFAULT_OCR_LANGUAGE],
     progress: null,
     error: null,
   };
+  private languages: string[] = [DEFAULT_OCR_LANGUAGE];
   private ocr: Ocr | null = null;
   private enableTask: Promise<SensitiveModelActionResult> | null = null;
+  private ocrTask: Promise<SensitiveModelActionResult> | null = null;
 
-  constructor(private readonly emitStatus: (status: SensitiveModelStatus) => void) {}
+  /** @param defaultLanguages selection for a fresh install (e.g. OS-locale + English). */
+  constructor(
+    private readonly emitStatus: (status: SensitiveModelStatus) => void,
+    defaultLanguages: string[] = [DEFAULT_OCR_LANGUAGE],
+  ) {
+    this.languages = normalizeOcrLanguages(defaultLanguages);
+  }
 
   /** Load the persisted opt-in and reflect what's cached. Kicks off background
-   *  readiness (loading the NER pipeline, warming OCR) when already enabled. */
-  initialize(): void {
-    const enabled = readEnabledFlag();
+   *  readiness (loading the NER pipeline, warming OCR) when already enabled.
+   *  @param defaultLanguages OCR languages for a fresh install (OS-locale aware). */
+  initialize(defaultLanguages?: string[]): void {
+    if (defaultLanguages && defaultLanguages.length) {
+      this.languages = normalizeOcrLanguages(defaultLanguages);
+    }
+    const settings = readSettings(this.languages);
+    this.languages = settings.languages;
     this.current = {
-      enabled,
+      enabled: settings.enabled,
       ner: isNerModelCached() ? "ready" : "missing",
-      ocr: isTessdataCached() ? "ready" : "missing",
+      ocr: allTessdataCached(this.languages) ? "ready" : "missing",
+      languages: [...this.languages],
       progress: null,
       error: null,
     };
-    if (enabled && isTessdataCached()) this.ocr = new Ocr({ langPath: tessdataDir() });
+    if (settings.enabled && allTessdataCached(this.languages)) {
+      this.ocr = new Ocr({ langPath: tessdataDir(), languages: this.languages });
+    }
     this.emit();
-    if (enabled) void this.setAdvanced(true); // resume any pending download; warm assets
+    if (settings.enabled) void this.setAdvanced(true); // resume any pending download; warm assets
   }
 
   status(): SensitiveModelStatus {
-    return { ...this.current };
+    return { ...this.current, languages: [...this.current.languages] };
   }
 
   isAdvancedEnabled(): boolean {
@@ -145,6 +192,31 @@ export class SensitiveModelManager {
     this.enableTask = task;
     void task.finally(() => {
       if (this.enableTask === task) this.enableTask = null;
+    });
+    return task;
+  }
+
+  /** Change the OCR languages. Persists the selection and, when Advanced is enabled,
+   *  downloads any newly-required language data and rebuilds the worker pool. A no-op
+   *  set (same languages) still returns the current readiness. */
+  setOcrLanguages(codes: readonly string[]): Promise<SensitiveModelActionResult> {
+    const next = normalizeOcrLanguages(codes);
+    const changed = next.join("+") !== this.languages.join("+");
+    this.languages = next;
+    if (!this.current.enabled) {
+      // Persist the choice; reflect (but don't fetch) what's cached for it.
+      void writeSettings({ enabled: false, languages: next });
+      this.update({ languages: [...next], ocr: allTessdataCached(next) ? "ready" : "missing" });
+      return Promise.resolve({ ok: true });
+    }
+    if (!changed && this.ocr && this.current.ocr === "ready") {
+      return Promise.resolve({ ok: true });
+    }
+    if (this.ocrTask) return this.ocrTask;
+    const task = this.applyOcrLanguages(next);
+    this.ocrTask = task;
+    void task.finally(() => {
+      if (this.ocrTask === task) this.ocrTask = null;
     });
     return task;
   }
@@ -181,8 +253,8 @@ export class SensitiveModelManager {
   // --- internals -----------------------------------------------------------
 
   private async enable(): Promise<SensitiveModelActionResult> {
-    await writeEnabledFlag(true);
-    this.update({ enabled: true, error: null });
+    await writeSettings({ enabled: true, languages: this.languages });
+    this.update({ enabled: true, languages: [...this.languages], error: null });
 
     let firstError: string | null = null;
 
@@ -200,25 +272,45 @@ export class SensitiveModelManager {
     }
 
     // OCR language data (small) + warm the worker pool so readiness is genuine.
-    try {
-      if (!isTessdataCached()) {
-        this.update({ ocr: "downloading" });
-        await downloadTessdata();
-      }
-      this.ocr ??= new Ocr({ langPath: tessdataDir() });
-      await this.ocr.warm();
-      this.update({ ocr: "ready" });
-    } catch (err) {
-      firstError ??= message(err);
-      this.ocr = null;
-      this.update({ ocr: "error", error: message(err) });
-    }
+    const ocrError = await this.ensureOcrReady();
+    if (ocrError) firstError ??= ocrError;
 
     return firstError ? { ok: false, error: firstError } : { ok: true };
   }
 
+  /** Rebuild the OCR engine for a new language selection (Advanced already on). */
+  private async applyOcrLanguages(next: string[]): Promise<SensitiveModelActionResult> {
+    await writeSettings({ enabled: true, languages: next });
+    this.update({ languages: [...next], error: null });
+    const ocr = this.ocr;
+    this.ocr = null;
+    if (ocr) await ocr.terminate();
+    const err = await this.ensureOcrReady();
+    return err ? { ok: false, error: err } : { ok: true };
+  }
+
+  /** Download any missing selected language data, then build + warm the pool.
+   *  Returns an error message on failure (and leaves OCR null / state "error"). */
+  private async ensureOcrReady(): Promise<string | null> {
+    try {
+      const missing = missingTessdata(this.languages);
+      if (missing.length) {
+        this.update({ ocr: "downloading" });
+        for (const code of missing) await downloadTessdata(code);
+      }
+      this.ocr = new Ocr({ langPath: tessdataDir(), languages: this.languages });
+      await this.ocr.warm();
+      this.update({ ocr: "ready" });
+      return null;
+    } catch (err) {
+      this.ocr = null;
+      this.update({ ocr: "error", error: message(err) });
+      return message(err);
+    }
+  }
+
   private async disable(): Promise<SensitiveModelActionResult> {
-    await writeEnabledFlag(false);
+    await writeSettings({ enabled: false, languages: this.languages });
     const ocr = this.ocr;
     this.ocr = null;
     if (ocr) await ocr.terminate();
@@ -227,7 +319,7 @@ export class SensitiveModelManager {
     this.update({
       enabled: false,
       ner: isNerModelCached() ? "ready" : "missing",
-      ocr: isTessdataCached() ? "ready" : "missing",
+      ocr: allTessdataCached(this.languages) ? "ready" : "missing",
       progress: null,
       error: null,
     });

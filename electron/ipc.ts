@@ -143,6 +143,12 @@ export function registerIpc(
     if (typeof enabled !== "boolean") return { ok: false, error: "Invalid preference." };
     return sensitiveModels.setAdvanced(enabled);
   });
+  ipcMain.handle(IPC.sensitiveSetOcrLanguages, (_event, codes: unknown) => {
+    if (!Array.isArray(codes) || !codes.every((c) => typeof c === "string")) {
+      return { ok: false, error: "Invalid language selection." };
+    }
+    return sensitiveModels.setOcrLanguages(codes as string[]);
+  });
 
   /**
    * Run the on-device pre-send scan and build the redaction context threaded into

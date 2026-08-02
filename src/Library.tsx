@@ -21,6 +21,7 @@ import type {
 } from "../common/skill";
 import { ARCHITECTURES, TARGETS } from "../common/skill";
 import type { AutomationPlan, BuiltAutomation } from "../common/automation";
+import { OCR_LANGUAGES } from "../common/ocr-languages";
 import {
   DEFAULT_NARRATION_LANGUAGE,
   NARRATION_MODEL_DOWNLOAD_LABEL,
@@ -137,6 +138,10 @@ function advancedSummary(status: SensitiveModelStatus | null): { label: string; 
     const pct = status.progress != null ? ` ${Math.round(status.progress)}%` : "";
     return { label: `Downloading models…${pct}`, tone: "busy" };
   }
+  // OCR unavailable but names still work: partial protection, not a hard failure.
+  if (status.ner === "ready" && (status.ocr === "error" || status.ocr === "missing")) {
+    return { label: "On — screen frames unavailable", tone: "warn" };
+  }
   if (status.ner === "error" || status.ocr === "error") {
     return { label: status.error ? `Error: ${status.error}` : "Model error", tone: "error" };
   }
@@ -153,6 +158,7 @@ function advancedSummary(status: SensitiveModelStatus | null): { label: string; 
 function AdvancedProtectionToggle() {
   const [status, setStatus] = useState<SensitiveModelStatus | null>(null);
   const [pending, setPending] = useState(false);
+  const [langPending, setLangPending] = useState(false);
 
   useEffect(() => {
     void window.skillRecorder.sensitiveModelStatus().then(setStatus);
@@ -169,8 +175,36 @@ function AdvancedProtectionToggle() {
     setPending(false);
   }, [status]);
 
+  const setLanguages = useCallback(async (next: string[]) => {
+    const langs = next.length ? next : ["eng"]; // never leave OCR with no language
+    setLangPending(true);
+    setStatus((s) => (s ? { ...s, languages: langs } : s)); // optimistic
+    const res = await window.skillRecorder.setOcrLanguages(langs);
+    if (!res.ok) void window.skillRecorder.sensitiveModelStatus().then(setStatus);
+    setLangPending(false);
+  }, []);
+
+  const retry = useCallback(async () => {
+    setPending(true);
+    await window.skillRecorder.setAdvancedProtection(true);
+    setPending(false);
+  }, []);
+
   const info = advancedSummary(status);
   const enabled = status?.enabled ?? false;
+  const languages = status?.languages ?? [];
+  const busy = status?.ner === "downloading" || status?.ocr === "downloading";
+  // Names work, but on-screen text can't be OCR'd/blurred → frames are withheld.
+  const ocrUnavailable =
+    enabled && !busy && (status?.ocr === "error" || status?.ocr === "missing");
+
+  const onToggleLang = (code: string) => {
+    if (langPending) return;
+    const next = languages.includes(code)
+      ? languages.filter((c) => c !== code)
+      : [...languages, code];
+    void setLanguages(next);
+  };
 
   return (
     <div className="adv-protect">
@@ -192,9 +226,52 @@ function AdvancedProtectionToggle() {
       </div>
       <p className="adv-protect-note">
         Adds on-device name detection and blurs sensitive text inside screen frames before they
-        are sent. Turning it on downloads two local models (~110&nbsp;MB) once; secrets and
-        personal details in text are always protected regardless.
+        are sent. Turning it on downloads local models once; secrets and personal details in text
+        are always protected regardless.
       </p>
+
+      {enabled && (
+        <div className="adv-langs">
+          <div className="adv-langs-head">
+            <span className="adv-langs-title">Screen-text languages</span>
+            <span className="adv-langs-hint">
+              Which languages to read on screen frames. Extra languages download once.
+            </span>
+          </div>
+          <div className="adv-langs-grid" role="group" aria-label="OCR languages">
+            {OCR_LANGUAGES.map((lang) => {
+              const on = languages.includes(lang.code);
+              return (
+                <label key={lang.code} className={`adv-lang${on ? " on" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={langPending}
+                    onChange={() => onToggleLang(lang.code)}
+                  />
+                  <span>{lang.label}</span>
+                </label>
+              );
+            })}
+          </div>
+          <p className="adv-langs-foot">
+            Name/place detection is English-only; secret and structured-PII detection works in any
+            language.
+          </p>
+        </div>
+      )}
+
+      {ocrUnavailable && (
+        <div className="adv-protect-warn" role="alert">
+          <span>
+            Screen-frame protection is unavailable — the OCR language data couldn’t be loaded, so
+            frames are <strong>withheld</strong> from analysis. Text is still protected.
+          </span>
+          <button className="adv-retry" onClick={() => void retry()} disabled={pending}>
+            Retry
+          </button>
+        </div>
+      )}
     </div>
   );
 }

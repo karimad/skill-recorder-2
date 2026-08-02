@@ -212,6 +212,8 @@ export class OcrFrameRedactor implements FrameRedactor {
     const s = sharp();
     if (!s || !this.ocr) return null;
 
+    // Throws on OCR engine failure → caught by redactFrame → the frame is withheld
+    // (never served unblurred). A text-free frame resolves to [] and serves normally.
     const words = await this.ocr.recognize(sourceFramePath);
     const image = s(sourceFramePath);
     const meta = await image.metadata();

@@ -14,9 +14,10 @@ import { createLogger } from "../logger";
 const require = createRequire(import.meta.url);
 const log = createLogger("Sensitive/ocr");
 
-const LANG = "eng";
-/** The (uncompressed) Tesseract language model file the manager places in langPath. */
-export const TESSDATA_FILE = `${LANG}.traineddata`;
+/** The (uncompressed) Tesseract language model filename for a tessdata code. */
+export function tessdataFileName(code: string): string {
+  return `${code}.traineddata`;
+}
 /** LSTM-only engine — matches the fast LSTM traineddata and skips legacy components. */
 const OEM_LSTM_ONLY = 1;
 
@@ -46,8 +47,11 @@ export function resolveCorePath(): string {
 }
 
 export interface OcrOptions {
-  /** Directory containing `eng.traineddata` (managed by the model manager). */
+  /** Directory containing the `<code>.traineddata` files (managed by the model manager). */
   langPath: string;
+  /** Tesseract tessdata codes to load, primary first (e.g. `["jpn", "eng"]`).
+   *  Defaults to English. Joined with `+` for the worker. */
+  languages?: string[];
   /** Number of reusable workers. Small by default — a few frames per call. */
   poolSize?: number;
 }
@@ -56,12 +60,15 @@ export interface OcrOptions {
  * A reusable pool of tesseract workers. Workers are expensive to create (each
  * loads the WASM core + language data), so they're built once on first use and
  * reused across recognitions. Recognitions beyond the pool size queue until a
- * worker frees up. Non-throwing at the call site: on any failure it returns no
- * words, so a frame is treated as "nothing to blur" only by callers that verify
- * OCR readiness first.
+ * worker frees up. `recognize` THROWS on engine failure (rather than returning an
+ * empty result) so the frame redactor can tell "OCR failed" apart from "blank
+ * screen" and withhold the frame instead of serving unblurred pixels; a genuinely
+ * text-free image still resolves with an empty word list.
  */
 export class Ocr {
   private readonly langPath: string;
+  private readonly languages: string[];
+  private readonly lang: string;
   private readonly poolSize: number;
   private tesseract: TesseractModule | null = null;
   private workers: TWorker[] = [];
@@ -72,12 +79,16 @@ export class Ocr {
 
   constructor(opts: OcrOptions) {
     this.langPath = opts.langPath;
+    this.languages = opts.languages && opts.languages.length ? opts.languages : ["eng"];
+    this.lang = this.languages.join("+");
     this.poolSize = Math.max(1, Math.min(4, opts.poolSize ?? 2));
   }
 
-  /** True once the language data exists and workers can be built. */
+  /** True once every selected language's data exists and workers can be built. */
   isLanguageDataPresent(): boolean {
-    return existsSync(path.join(this.langPath, TESSDATA_FILE));
+    return this.languages.every((code) =>
+      existsSync(path.join(this.langPath, tessdataFileName(code))),
+    );
   }
 
   /** Eagerly build the worker pool so the first frame isn't slow and readiness is
@@ -95,7 +106,7 @@ export class Ocr {
       const tesseract = (this.tesseract ??= await import("tesseract.js"));
       const corePath = resolveCorePath();
       for (let i = 0; i < this.poolSize; i++) {
-        const worker = await tesseract.createWorker(LANG, OEM_LSTM_ONLY, {
+        const worker = await tesseract.createWorker(this.lang, OEM_LSTM_ONLY, {
           corePath,
           langPath: this.langPath,
           // "none": never touch a write-back cache; always read the local
@@ -116,9 +127,11 @@ export class Ocr {
     return this.initPromise;
   }
 
-  /** Recognize words + boxes in one image (a JPEG file path or a Buffer). */
+  /** Recognize words + boxes in one image (a JPEG file path or a Buffer). Throws on
+   *  engine failure so callers withhold the frame rather than treat a failed read as
+   *  "nothing to blur"; a successful read of a text-free image returns []. */
   async recognize(image: string | Buffer): Promise<OcrWord[]> {
-    if (this.terminated) return [];
+    if (this.terminated) throw new Error("OCR engine has been terminated.");
     await this.ensureInit();
     const worker = await this.acquire();
     try {
@@ -126,7 +139,7 @@ export class Ocr {
       return wordsFrom(data as unknown as RawPage);
     } catch (err) {
       log.warn("recognize failed:", err instanceof Error ? err.message : err);
-      return [];
+      throw err instanceof Error ? err : new Error(String(err));
     } finally {
       this.release(worker);
     }
