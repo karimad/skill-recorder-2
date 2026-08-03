@@ -393,9 +393,6 @@ export function Recorder() {
                         : "Explain out loud (optional)"}
               </span>
             </span>
-            <span className={`narrate-switch ${narrate ? "on" : ""}`} aria-hidden>
-              <span className="narrate-knob" />
-            </span>
           </button>
           <button
             className={`narrate-settings-toggle ${showNarrationSettings ? "open" : ""}`}
@@ -415,6 +412,23 @@ export function Recorder() {
                 d="M19.43 12.98c.04-.32.07-.65.07-.98s-.03-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.6-.22l-2.49 1a7.2 7.2 0 0 0-1.69-.98l-.38-2.65A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.5.42l-.38 2.65c-.61.25-1.17.58-1.69.98l-2.49-1a.5.5 0 0 0-.6.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65a7.7 7.7 0 0 0 0 1.96l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46a.5.5 0 0 0 .6.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65A.5.5 0 0 0 10 22h4a.5.5 0 0 0 .5-.42l.38-2.65c.61-.25 1.17-.58 1.69-.98l2.49 1a.5.5 0 0 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z"
               />
             </svg>
+          </button>
+          <button
+            type="button"
+            className="narrate-switch-btn"
+            aria-hidden
+            tabIndex={-1}
+            disabled={
+              !microphoneSettings ||
+              microphonePending ||
+              recording ||
+              transitioning
+            }
+            onClick={() => void toggleNarration()}
+          >
+            <span className={`narrate-switch ${narrate ? "on" : ""}`}>
+              <span className="narrate-knob" />
+            </span>
           </button>
         </div>
 

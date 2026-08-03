@@ -455,11 +455,29 @@ button:focus-visible,
   display: grid;
   place-items: center;
   flex: none;
-  width: 42px;
-  border-left: 1px solid var(--line);
+  align-self: center;
+  width: 32px;
+  height: 32px;
+  margin-right: 2px;
+  border-radius: 8px;
   color: var(--muted);
   background: transparent;
   transition: color 0.15s ease, background 0.15s ease;
+}
+
+.narrate-switch-btn {
+  display: flex;
+  align-items: center;
+  flex: none;
+  align-self: center;
+  padding: 0 11px 0 2px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.narrate-switch-btn:disabled {
+  cursor: default;
+  opacity: 0.9;
 }
 
 .narrate-settings-toggle:not(:disabled):hover,
