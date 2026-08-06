@@ -177,6 +177,32 @@ const githubIssueTriage: SkillBuilderScenario = {
   },
 };
 
+/** Same recording as githubIssueTriage, targeting the agent-skill (generic) catalogue: must
+ *  still reach for the gh CLI (a universal primitive — the shell), but the plan must name NO
+ *  product-specific tool ID (no workiq_*, no m365_*, no named browser-tool suite) since the
+ *  destination agent is unknown. */
+const githubIssueTriageAgentSkill: SkillBuilderScenario = {
+  ...githubIssueTriage,
+  id: "github-issue-triage-agent-skill",
+  title: "Triage new bug issues on GitHub (agent skill)",
+  architecture: "agent-skill",
+  rubric: {
+    mustUseAny: [["gh "], ["gh issue", "gh api"]],
+    forbidden: [
+      "playwright",
+      "browser_",
+      "workiq",
+      "m365_",
+      "click",
+      "navigate to github",
+      "github.com/acme",
+    ],
+    minValues: 1,
+    minCalculations: 1,
+    minActions: 1,
+  },
+};
+
 /* --- Cowork (Microsoft 365 Copilot) scenarios ----------------------------- */
 
 /** Read a Teams channel in the web app, summarize, post a digest — must use the m365_teams tool, never the browser. */
@@ -249,6 +275,23 @@ const coworkTeamsDigest: SkillBuilderScenario = {
   rubric: {
     mustUseAny: [["m365_teams"], ["postchannelmessage", "postmessage", "replytochannelmessage"]],
     forbidden: ["playwright", "browser_", "click", "teams.microsoft.com"],
+    minCalculations: 1,
+    minActions: 1,
+  },
+};
+
+/** Same Teams recording as coworkTeamsDigest, retargeted to agent-skill — a harder case than
+ *  the gh-CLI scenario since there's no CLI at all for Teams. No proprietary tool exists in the
+ *  agent-skill catalogue for this, so the right generalization is a documented HTTP API call
+ *  (Microsoft Graph) rather than inventing a plausible-sounding native tool name. */
+const teamsDigestAgentSkill: SkillBuilderScenario = {
+  ...coworkTeamsDigest,
+  id: "teams-digest-agent-skill",
+  title: "Post a morning digest to the leads Teams channel (agent skill)",
+  architecture: "agent-skill",
+  rubric: {
+    mustUseAny: [["curl", "web_fetch", "fetch"]],
+    forbidden: ["m365_teams", "workiq", "postchannelmessage", "listchannelmessages", "playwright", "browser_"],
     minCalculations: 1,
     minActions: 1,
   },
@@ -399,6 +442,8 @@ const coworkCalendarSchedule: SkillBuilderScenario = {
 export const skillScenarios: SkillBuilderScenario[] = [
   priceTracker,
   githubIssueTriage,
+  githubIssueTriageAgentSkill,
+  teamsDigestAgentSkill,
   coworkTeamsDigest,
   coworkOutlookReply,
   coworkCalendarSchedule,
