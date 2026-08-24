@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { approveAll, CopilotClient, ToolSet } from "@github/copilot-sdk";
 
 import { copilotConnectionOption, withStartupTimeout } from "../../electron/copilot-cli-path";
+import { parseAllowedBashPatterns } from "./allowed-tools";
 import { createBashTool, type BashInvocation } from "./bash-tool";
 import { skillRuntimeScenarios } from "./scenarios";
 import { scoreRuntime, type RuntimeScoreResult } from "./score";
@@ -100,10 +101,15 @@ async function main(): Promise<void> {
       const skillMd = readFileSync(fixturePath, "utf8");
       const skillName = readSkillName(skillMd);
 
+      // Pushed immediately after each mkdtempSync, not batched at the end — if a
+      // later call in this sequence throws, the dirs already created above must
+      // still be recorded for cleanup, or they leak under /tmp on that failure path.
       const scratchDir = mkdtempSync(path.join(os.tmpdir(), "sr-runtime-scratch-"));
+      tempDirs.push(scratchDir);
       const skillsRoot = mkdtempSync(path.join(os.tmpdir(), "sr-runtime-skills-"));
+      tempDirs.push(skillsRoot);
       const logDir = mkdtempSync(path.join(os.tmpdir(), "sr-runtime-log-"));
-      tempDirs.push(scratchDir, skillsRoot, logDir);
+      tempDirs.push(logDir);
       const skillDestDir = path.join(skillsRoot, skillName);
       mkdirSync(skillDestDir, { recursive: true });
       writeFileSync(path.join(skillDestDir, "SKILL.md"), skillMd);
@@ -112,11 +118,14 @@ async function main(): Promise<void> {
       writeFileSync(mockGhLog, "");
 
       const trace: BashInvocation[] = [];
+      const deniedTrace: BashInvocation[] = [];
       const bashTool = createBashTool({
         mockBinDir: MOCKS_DIR,
         cwd: scratchDir,
         env: { MOCK_GH_LOG: mockGhLog },
+        allowedPatterns: parseAllowedBashPatterns(skillMd),
         trace,
+        deniedTrace,
       });
 
       const session = await client.createSession({
@@ -153,6 +162,7 @@ async function main(): Promise<void> {
         console.error(`   scratch: ${scratchDir}`);
         console.error(`   skills:  ${skillsRoot}`);
         console.error(`   gh log:  ${mockGhLog}`);
+        for (const d of deniedTrace) console.error(`   denied:  ${d.command}`);
       }
     } catch (err) {
       res.error = err instanceof Error ? err.message : String(err);

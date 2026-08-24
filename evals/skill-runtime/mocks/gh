@@ -50,7 +50,19 @@ JSON
     fi
     ;;
   "issue view")
-    echo '{"number":214,"labels":[{"name":"bug"}]}'
+    # Honor the actual requested issue number ($3) instead of always answering for
+    # #214 — a scenario that later queries a different issue individually must get
+    # that issue's real data, not silently wrong data for a different one.
+    case "${3:-}" in
+      214) echo '{"number":214,"title":"Login button unresponsive on Safari","labels":[{"name":"bug"}],"assignees":[]}' ;;
+      220) echo '{"number":220,"title":"Crash when exporting a large report","labels":[{"name":"bug"},{"name":"needs-info"}],"assignees":[]}' ;;
+      300) echo '{"number":300,"title":"Rate limiter occasionally double-counts","labels":[{"name":"bug"}],"assignees":[{"login":"carol"}]}' ;;
+      310) echo '{"number":310,"title":"Add dark mode toggle","labels":[{"name":"enhancement"}],"assignees":[]}' ;;
+      *)
+        echo "mock gh: issue #${3:-<missing>} not found" >&2
+        exit 1
+        ;;
+    esac
     ;;
   "issue comment")
     echo '{"ok":true}'

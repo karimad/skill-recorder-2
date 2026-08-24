@@ -1,6 +1,7 @@
 // Deterministic scoring for the skill-runtime evals — checks the REAL mock-gh
 // invocation log and the runtime session's Bash tool trace, not plan text.
 
+import { commandMatchesAny, parseAllowedBashPatterns } from "./allowed-tools";
 import type { BashInvocation } from "./bash-tool";
 import type { RuntimeRubric } from "./scenario";
 
@@ -33,21 +34,12 @@ function anyLineMatchesAll(lines: string[], group: string[]): boolean {
   return lines.some((line) => lineMatchesAll(line, group));
 }
 
-/** Parse `allowed-tools` `Bash(<pattern> *)` frontmatter entries into plain command
- *  prefixes, e.g. `"Bash(gh issue list *)"` -> `"gh issue list"`. Non-Bash entries
- *  (`Read`, `Write`, ...) are ignored — this harness only exercises the shell. */
-function parseAllowedBashPrefixes(skillMd: string): string[] {
-  const prefixes: string[] = [];
-  const re = /Bash\(([^)]*?)\s*\*\)/g;
-  for (const match of skillMd.matchAll(re)) prefixes.push(match[1].trim());
-  return prefixes;
-}
-
-/** `gh` subcommand verbs that mutate GitHub state. A benign read-only sanity check
- *  (e.g. `gh repo view` before triaging) isn't the regression this check exists to
- *  catch, and gating on it would make the suite flaky on harmless model variance —
- *  same read-vs-mutating distinction the project's own catalogues already draw
- *  ("Read tools are auto-approved; send/create/update/delete need approval"). */
+/** `gh` subcommand verbs that mutate GitHub state — kept only to LABEL which
+ *  violations are worth surfacing distinctly; enforcement itself (bash-tool.ts)
+ *  already refuses to run ANY command outside allowed-tools before this scoring
+ *  ever sees it, so `bashTrace` should never actually contain a violation here.
+ *  This check is a redundant safety net in case enforcement and scoring logic
+ *  ever drift apart, not the primary gate. */
 const MUTATING_GH_VERBS = ["comment", "edit", "create", "close", "reopen", "delete", "merge", "assign", "label"];
 
 function isMutatingGhCommand(command: string): boolean {
@@ -55,24 +47,24 @@ function isMutatingGhCommand(command: string): boolean {
   return tokens[0] === "gh" && MUTATING_GH_VERBS.includes(tokens[2] ?? "");
 }
 
-/** Every MUTATING Bash command the session ran must match at least one
- *  `allowed-tools` prefix declared in the fixture's own frontmatter — catches a
- *  regression where the runtime (or a future skill revision) reaches for a
- *  side-effecting command outside what the skill actually declared it needs. */
+/** Redundant post-hoc check: every MUTATING Bash command that actually ran must
+ *  match a declared `allowed-tools` pattern. Since bash-tool.ts enforces this
+ *  before execution, a violation here means enforcement itself has a bug — this
+ *  check exists to catch exactly that, not as the primary gate. */
 function checkAllowedTools(bashTrace: BashInvocation[], skillMd: string): RuntimeCheck {
-  const prefixes = parseAllowedBashPrefixes(skillMd);
-  if (prefixes.length === 0) {
-    return { name: "every mutating Bash command matches a declared allowed-tools prefix", pass: true };
+  const patterns = parseAllowedBashPatterns(skillMd);
+  if (patterns.length === 0) {
+    return { name: "every mutating Bash command matches a declared allowed-tools pattern", pass: true };
   }
   const violations = bashTrace
     .map((b) => b.command.trim())
     .filter((cmd) => isMutatingGhCommand(cmd))
-    .filter((cmd) => !prefixes.some((p) => cmd.startsWith(p)));
+    .filter((cmd) => !commandMatchesAny(cmd, patterns));
   return {
-    name: "every mutating Bash command matches a declared allowed-tools prefix",
+    name: "every mutating Bash command matches a declared allowed-tools pattern",
     pass: violations.length === 0,
     detail: violations.length
-      ? `commands outside allowed-tools (${prefixes.join(", ")}): ${violations.join(" ; ")}`
+      ? `commands outside allowed-tools (enforcement should have blocked these): ${violations.join(" ; ")}`
       : undefined,
   };
 }
