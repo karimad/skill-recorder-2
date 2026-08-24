@@ -284,6 +284,99 @@ read with **English-only** traineddata (the ASCII value is recognized and blurre
 even though the surrounding Japanese OCRs to garbage — validating the eng-only
 product decision).
 
+## Skill runtime evals (`evals/skill-runtime/`)
+
+A different kind of guard than the three harnesses above: those score the
+**builder's proposed plan** (tool mentions, structure) — none of them ever
+generate → export → load → execute a real `SKILL.md` in a target runtime and
+check the resulting behavior. This harness closes that gap. It exists because a
+plan that *mentions* `gh` correctly doesn't prove the exported artifact actually
+gets discovered and executed correctly — the builder could propose a perfect
+plan and still ship a skill that a real runtime never loads, or that drifts from
+its own declared procedure once it's an independent file on disk.
+
+```bash
+npm run eval:skill-runtime                         # all runtime scenarios
+npm run eval:skill-runtime -- --only=github-issue-triage-runtime
+npm run eval:skill-runtime -- --keep               # print temp dirs + denied Bash attempts
+```
+
+Uses only what's already required for the rest of this suite — a signed-in
+Copilot CLI, the already-vendored `@github/copilot-sdk` — no new dependency, no
+new credential.
+
+**How a run works.** Unlike the builder harnesses, this one does **not**
+regenerate a skill per run: it ships a FIXED, already-built `SKILL.md` as a
+static fixture (`fixtures/<id>/SKILL.md`, checked in), so a runtime-eval failure
+points at the runtime, not at builder variance — the same "isolate the layer
+under test" principle the rest of this suite already follows. For each scenario:
+
+1. Reads the fixture and its frontmatter `name:`.
+2. Writes it into a temp `skillDirectories` root a **fresh** Copilot session
+   (separate from any builder session) is pointed at.
+3. Gives the session exactly one tool — a custom `Bash`, scoped to a mocked
+   `PATH` (`mocks/`) — and sends the scenario's task prompt.
+4. Scores the REAL resulting mock-CLI invocations against the rubric, not
+   anything the model merely said.
+
+**Fixtures are provenance-tracked, not hand-written.** `fixtures/regenerate.ts`
+runs the real `SkillBuilder` against a fixed analysis and exports the result —
+re-run it (and re-commit the output) only when the target catalogue changes
+meaningfully; never hand-edit a fixture's `SKILL.md` directly, or it stops being
+evidence that the builder pipeline actually produces this artifact.
+
+**Mocks are real executables, not stubs that always agree.** `mocks/gh`
+(checked in, mirrors `evals/mocks/*.html` for a CLI instead of a web page)
+actually simulates GitHub-side filtering: `issue list` only returns the clean,
+intended result set when the invocation's flags actually ask for the right
+filter — an invocation that dropped its own filtering gets back a noisier set
+including issues a correct filter would have excluded. A skill that doesn't
+genuinely filter, only appears to, fails visibly instead of passing by luck.
+
+**Security.** The custom `Bash` tool enforces the fixture's own declared
+`allowed-tools` frontmatter *before* executing anything — a command outside the
+declared patterns is refused (never reaches `/bin/sh`) rather than merely
+flagged after the fact, and the child process never inherits the host's real
+environment or `PATH`. This matters because the whole point of this harness is
+running a generated artifact whose exact shell commands weren't authored by
+you — treat it accordingly if you add a scenario that needs a broader mock
+surface (`curl`, other CLIs): widen `mocks/`, never widen what the Bash tool
+will execute unchecked.
+
+**Rubric** (`score.ts`): `mustCallGh` / `forbiddenGhCalls` groups match exact
+argv tokens on the mock's invocation log (not raw substrings — a check for issue
+`214` must not accidentally match `2140`); `forbiddenInCommands` is intentionally
+substring-based, since it's hunting for a vendor-specific tool name that may
+appear as a prefix of a longer identifier (`workiq_search_chats` contains
+`workiq`); and a redundant post-hoc check confirms every *mutating* Bash command
+that ran matches a declared `allowed-tools` pattern (redundant because the Bash
+tool already enforces this — a violation here would mean enforcement itself has
+a bug). Read-only reconnaissance (e.g. an occasional `gh repo view` before
+triaging) is exempt from that last check on purpose: gating on it would fail the
+suite on harmless model variance rather than a real regression.
+
+**Coverage.** One scenario today, `github-issue-triage-runtime`, executing the
+`github-issue-triage-agent-skill` fixture (the `agent-skill`/generic-target
+catalogue) against four mock issues: one the skill must act on, and three it
+must correctly leave alone for three different reasons (already triaged,
+already assigned, wrong label) — a broader behavioral bar than "did it call
+`gh`".
+
+### Add a runtime scenario
+
+1. If you need a new fixture, add a fixed `AnalysisSubmission` to
+   `fixtures/regenerate.ts` (or a new regenerate script) and run it to produce a
+   real `fixtures/<id>/SKILL.md` — don't hand-write one.
+2. If the skill needs a CLI this suite doesn't mock yet, add a real executable
+   under `mocks/` (see `mocks/gh` for the shape: log every invocation, branch on
+   the actual flags, return canned-but-realistic data).
+3. Add a `SkillRuntimeScenario` to `scenarios.ts`: the fixture's directory name,
+   a task prompt, and a rubric. Prefer asserting exact behavior (which calls
+   must/must-not appear) over "some tool was called".
+4. Run `npm run eval:skill-runtime -- --only=<your-id> --keep` a few times
+   before committing — LLM runs have real variance, so confirm the rubric holds
+   up across repeats, not just once.
+
 ## Mock pages (`evals/mocks/`)
 
 Static, self-contained HTML fixtures matching the scenarios (`pricing.html`,
