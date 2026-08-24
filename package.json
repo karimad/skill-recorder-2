@@ -23,6 +23,7 @@
     "eval": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/run.ts",
     "eval:builder": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/builder/run.ts",
     "eval:skill": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/skillbuilder/run.ts",
+    "eval:skill-runtime": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/skill-runtime/run.ts",
     "eval:sensitive": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/sensitive/run.ts",
     "eval:sensitive:ocr": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/sensitive/ocr-images.ts",
     "eval:sensitive:realistic": "node --experimental-transform-types --no-warnings --import ./evals/register.mjs evals/sensitive/ocr-realistic.ts",

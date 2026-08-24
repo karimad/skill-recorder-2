@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Mock `gh` CLI for the skill-runtime evals. Logs every invocation (one line per
+# call, raw argv) to $MOCK_GH_LOG, then returns canned data for the two mock issues
+# the github-issue-triage-agent-skill fixture is scored against:
+#   #214 — bug, unassigned, NOT yet triaged -> the skill must comment + label it.
+#   #220 — bug, unassigned, ALREADY has needs-info -> the skill must skip it.
+# This is the behavioral check adilei's PR #53 feedback asked for: not just "did it
+# call gh", but "did it act on the right issues and only the right issues".
+set -euo pipefail
+
+: "${MOCK_GH_LOG:?MOCK_GH_LOG must be set}"
+echo "$*" >>"$MOCK_GH_LOG"
+
+case "${1:-} ${2:-}" in
+  "--version "|"version ")
+    echo "gh version 2.99.0 (mock)"
+    ;;
+  "--help "|"help ")
+    echo "mock gh: usage: gh <command> <subcommand> [flags]"
+    ;;
+  "issue list")
+    cat <<'JSON'
+[
+  {"number":214,"title":"Login button unresponsive on Safari","labels":[{"name":"bug"}]},
+  {"number":220,"title":"Crash when exporting a large report","labels":[{"name":"bug"},{"name":"needs-info"}]}
+]
+JSON
+    ;;
+  "issue view")
+    echo '{"number":214,"labels":[{"name":"bug"}]}'
+    ;;
+  "issue comment")
+    echo '{"ok":true}'
+    ;;
+  "issue edit")
+    echo '{"ok":true}'
+    ;;
+  *)
+    echo "mock gh: unhandled subcommand: $*" >&2
+    exit 1
+    ;;
+esac
