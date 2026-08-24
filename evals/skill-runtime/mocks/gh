@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # Mock `gh` CLI for the skill-runtime evals. Logs every invocation (one line per
-# call, raw argv) to $MOCK_GH_LOG, then returns canned data for the two mock issues
-# the github-issue-triage-agent-skill fixture is scored against:
+# call, raw argv) to $MOCK_GH_LOG, then returns canned data for a small mock issue
+# set the github-issue-triage-agent-skill fixture is scored against:
 #   #214 — bug, unassigned, NOT yet triaged -> the skill must comment + label it.
 #   #220 — bug, unassigned, ALREADY has needs-info -> the skill must skip it.
-# This is the behavioral check adilei's PR #53 feedback asked for: not just "did it
-# call gh", but "did it act on the right issues and only the right issues".
+#   #300 — bug, but ALREADY ASSIGNED -> must be excluded by a correct `no:assignee`
+#          filter; only appears if `issue list` didn't actually filter by assignee.
+#   #310 — unassigned, but labeled "enhancement" not "bug" -> must be excluded by a
+#          correct `--label bug` filter; only appears if that filter was dropped.
+# `issue list` only returns the correctly-filtered #214/#220 pair when the
+# invocation actually asked for `--label ... bug` and `no:assignee` — a skill that
+# dropped its own filtering logic gets back the noisier set instead, so acting on
+# everything returned (rather than genuinely filtering) trips the forbidden-call
+# checks for #300/#310. This is the behavioral check adilei's PR #53 feedback asked
+# for: not just "did it call gh", but "did it act on the right issues and only the
+# right issues, via a call that actually did the filtering it claims to".
 set -euo pipefail
 
 : "${MOCK_GH_LOG:?MOCK_GH_LOG must be set}"
@@ -19,12 +28,26 @@ case "${1:-} ${2:-}" in
     echo "mock gh: usage: gh <command> <subcommand> [flags]"
     ;;
   "issue list")
-    cat <<'JSON'
+    args="$*"
+    if [[ "$args" == *"bug"* && "$args" == *"no:assignee"* ]]; then
+      cat <<'JSON'
 [
-  {"number":214,"title":"Login button unresponsive on Safari","labels":[{"name":"bug"}]},
-  {"number":220,"title":"Crash when exporting a large report","labels":[{"name":"bug"},{"name":"needs-info"}]}
+  {"number":214,"title":"Login button unresponsive on Safari","labels":[{"name":"bug"}],"assignees":[]},
+  {"number":220,"title":"Crash when exporting a large report","labels":[{"name":"bug"},{"name":"needs-info"}],"assignees":[]}
 ]
 JSON
+    else
+      # Filters missing/wrong: a real `gh` would return the broader result set,
+      # including issues a correct filter would have excluded.
+      cat <<'JSON'
+[
+  {"number":214,"title":"Login button unresponsive on Safari","labels":[{"name":"bug"}],"assignees":[]},
+  {"number":220,"title":"Crash when exporting a large report","labels":[{"name":"bug"},{"name":"needs-info"}],"assignees":[]},
+  {"number":300,"title":"Rate limiter occasionally double-counts","labels":[{"name":"bug"}],"assignees":[{"login":"carol"}]},
+  {"number":310,"title":"Add dark mode toggle","labels":[{"name":"enhancement"}],"assignees":[]}
+]
+JSON
+    fi
     ;;
   "issue view")
     echo '{"number":214,"labels":[{"name":"bug"}]}'

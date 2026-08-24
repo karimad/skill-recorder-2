@@ -94,17 +94,22 @@ async function main(): Promise<void> {
   const builder = new SkillBuilder((p) => {
     if (p.message) console.error(`  · ${p.message}`);
   });
+  const exportRoot = mkdtempSync(path.join(os.tmpdir(), "sr-fixture-export-"));
   try {
     const plan = await builder.build({ sessionId: FIXTURE_ID, architecture: "agent-skill" });
-    const exportRoot = mkdtempSync(path.join(os.tmpdir(), "sr-fixture-export-"));
     const { path: skillPath } = await builder.create(FIXTURE_ID, plan, { kind: "export", dir: exportRoot });
 
     const destDir = path.join(here, FIXTURE_ID);
     if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true });
+    // Renames the whole <exportRoot>/<skillName> directory, not just SKILL.md —
+    // safe only because `exportRoot` is a dir we just mkdtemp'd and `builder.create`
+    // is the only thing that has written into it, so <skillName> is its sole child.
     renameSync(path.dirname(skillPath), destDir);
     console.error(`Wrote fixture: ${path.join(destDir, "SKILL.md")}`);
   } finally {
     await builder.dispose();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(exportRoot, { recursive: true, force: true });
   }
 }
 

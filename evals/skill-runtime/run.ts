@@ -15,7 +15,7 @@
 //   --only=slug,slug   run a subset of scenarios
 //   --keep             print the temp dirs (artifacts kept for inspection)
 
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,6 +91,7 @@ async function main(): Promise<void> {
     console.error(`\n▶ ${scenario.id} — ${scenario.title}`);
     const started = Date.now();
     const res: Result = { id: scenario.id, title: scenario.title, ok: false, durationMs: 0 };
+    const tempDirs: string[] = [];
     try {
       const fixturePath = path.join(FIXTURES_DIR, scenario.fixtureDir, "SKILL.md");
       if (!existsSync(fixturePath)) {
@@ -101,11 +102,13 @@ async function main(): Promise<void> {
 
       const scratchDir = mkdtempSync(path.join(os.tmpdir(), "sr-runtime-scratch-"));
       const skillsRoot = mkdtempSync(path.join(os.tmpdir(), "sr-runtime-skills-"));
+      const logDir = mkdtempSync(path.join(os.tmpdir(), "sr-runtime-log-"));
+      tempDirs.push(scratchDir, skillsRoot, logDir);
       const skillDestDir = path.join(skillsRoot, skillName);
       mkdirSync(skillDestDir, { recursive: true });
       writeFileSync(path.join(skillDestDir, "SKILL.md"), skillMd);
 
-      const mockGhLog = path.join(mkdtempSync(path.join(os.tmpdir(), "sr-runtime-log-")), "gh.log");
+      const mockGhLog = path.join(logDir, "gh.log");
       writeFileSync(mockGhLog, "");
 
       const trace: BashInvocation[] = [];
@@ -144,7 +147,7 @@ async function main(): Promise<void> {
       }
 
       const ghLogLines = readFileSync(mockGhLog, "utf8").split("\n").filter(Boolean);
-      res.score = scoreRuntime(ghLogLines, trace, scenario.rubric);
+      res.score = scoreRuntime(ghLogLines, trace, scenario.rubric, skillMd);
       res.ok = res.score.pass;
       if (flags.keep) {
         console.error(`   scratch: ${scratchDir}`);
@@ -153,6 +156,12 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       res.error = err instanceof Error ? err.message : String(err);
+    } finally {
+      // Clean up unless --keep — otherwise every run (and every CI invocation)
+      // leaks 3 temp dirs into /tmp.
+      if (!flags.keep) {
+        for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+      }
     }
     res.durationMs = Date.now() - started;
     results.push(res);
