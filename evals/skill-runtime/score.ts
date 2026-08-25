@@ -40,6 +40,9 @@ function anyLineMatchesAll(lines: string[], group: string[]): boolean {
  *  ever sees it, so `bashTrace` should never actually contain a violation here.
  *  This check is a redundant safety net in case enforcement and scoring logic
  *  ever drift apart, not the primary gate. */
+// "label" is included for forward-compatibility with skills that call
+// `gh issue label` directly, even though the shipped fixture uses
+// `gh issue edit --add-label` instead.
 const MUTATING_GH_VERBS = ["comment", "edit", "create", "close", "reopen", "delete", "merge", "assign", "label"];
 
 function isMutatingGhCommand(command: string): boolean {

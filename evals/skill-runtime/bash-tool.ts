@@ -32,6 +32,8 @@ export interface BashToolContext {
   allowedPatterns: BashPattern[];
   /** Only commands that actually ran are pushed here, in order, for scoring. */
   trace: BashInvocation[];
+  /** Max time a single command may run, in ms. Defaults to 15s. */
+  timeoutMs?: number;
   /** Commands refused by the allowed-tools gate — never executed, kept separately
    *  so a refusal (the gate working correctly) is never mistaken for a scoring
    *  violation. Visible for debugging via --keep. */
@@ -82,7 +84,7 @@ export function createBashTool(ctx: BashToolContext): Tool {
           cwd: ctx.cwd,
           env,
           encoding: "utf8",
-          timeout: 15_000,
+          timeout: ctx.timeoutMs ?? 15_000,
         });
       } catch (err) {
         const e = err as { stdout?: string; stderr?: string; status?: number; message: string };
