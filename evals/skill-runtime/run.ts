@@ -150,7 +150,13 @@ async function main(): Promise<void> {
       });
       try {
         const reply = await session.sendAndWait(scenario.task, SESSION_TIMEOUT_MS);
-        if (flags.keep) console.error(`   reply:   ${JSON.stringify(reply.data).slice(0, 500)}`);
+        if (flags.keep) {
+          console.error(
+            reply === undefined
+              ? "   reply:   (none — session timed out or closed before an assistant message arrived)"
+              : `   reply:   ${JSON.stringify(reply.data).slice(0, 500)}`,
+          );
+        }
       } finally {
         await session.disconnect().catch(() => undefined);
       }
